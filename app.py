@@ -1,151 +1,82 @@
 import streamlit as st
 import yfinance as yf
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide", page_title="Wyckoff State Machine")
+st.set_page_config(layout="wide", page_title="Wyckoff Institutional Scout")
 
 # ----------------------------
-# 1. DATA ENGINE (SAFE)
+# 1. LOGIC & DATA
 # ----------------------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def get_data(ticker):
-    try:
-        df = yf.Ticker(ticker).history(period="1y")
+    df = yf.Ticker(ticker).history(period="1y")
+    if len(df) < 100: return None
+    df["VOL_MEAN"] = df["Volume"].rolling(20).mean()
+    df["BODY"] = abs(df["Close"] - df["Open"])
+    df["LOWER_SHADOW"] = df[["Open", "Close"]].min(axis=1) - df["Low"]
+    return df
 
-        if df is None or df.empty:
-            return None
-
-        df = df.copy()
-
-        # indicators
-        df["SMA50"] = df["Close"].rolling(50).mean()
-
-        df["VOL_MEAN"] = df["Volume"].rolling(20).mean()
-        df["VOL_STD"] = df["Volume"].rolling(20).std()
-        df["VOL_STD"] = df["VOL_STD"].replace(0, np.nan)
-
-        df["VOL_Z"] = (df["Volume"] - df["VOL_MEAN"]) / (df["VOL_STD"] + 1e-9)
-
-        df["ATR"] = (df["High"] - df["Low"]).rolling(14).mean()
-        df["ATR_NORM"] = df["ATR"] / (df["Close"] + 1e-9)
-
-        df = df.dropna()
-
-        if len(df) < 60:
-            return None
-
-        return df
-
-    except Exception as e:
-        st.error(f"Data error: {e}")
-        return None
-
+def analyze_wyckoff(df):
+    last = df.iloc[-1]
+    # Selling Climax: Vol spike + Long lower tail
+    vol_spike = last["Volume"] > (df["VOL_MEAN"].iloc[-1] * 1.5)
+    long_shadow = last["LOWER_SHADOW"] > (last["BODY"] * 1.5)
+    # No Supply: Low volume relative to mean
+    no_supply = last["Volume"] < (df["VOL_MEAN"].iloc[-1] * 0.8)
+    
+    # Scoring (0-100)
+    score = 0
+    reasons = []
+    if vol_spike: 
+        score += 50
+        reasons.append("זוהה Selling Climax: ווליום גבוה עם זנב תחתון המעיד על ספיגת פאניקה.")
+    if no_supply: 
+        score += 50
+        reasons.append("זוהה No Supply: רגיעה בווליום המעידה על כך שהיצע המוכרים התייבש.")
+    
+    return score, reasons
 
 # ----------------------------
-# 2. PROBABILITY ENGINE (SAFE)
+# 2. UI & BUTTONS
 # ----------------------------
-def get_accumulation_prob(df, support, resistance):
-    try:
-        last = df.iloc[-1]
+st.title("Wyckoff Institutional Scout")
 
-        range_den = max(resistance - support, 1e-9)
+# Help Modal
+with st.expander("ℹ️ איך הבוט עובד? לחץ להסבר"):
+    st.write("""
+    **מה הבוט מחפש?**
+    הבוט מחפש חתימות של 'כסף חכם' (מוסדיים) לפי מתודולוגיית וייקוף:
+    1. **Selling Climax (50 נק'):** פאניקה בשוק עם ווליום חריג שנעצרת ע"י קונים גדולים (זנב תחתון בנר).
+    2. **No Supply (50 נק'):** לאחר הפאניקה, בוט מחפש רגיעה משמעותית בווליום. זה מעיד שהקונים המוסדיים 'בלעו' את כל המוכרים ואין יותר היצע שמושך את המחיר למטה.
+    """)
 
-        # 1. position in range
-        pos = (last["Close"] - support) / range_den
-        pos = np.clip(pos, 0, 1)
-        f1 = 1 - pos
-
-        # 2. volume pressure
-        vol_mean = df["Volume"].rolling(20).mean().iloc[-1]
-        vol_mean = vol_mean if not np.isnan(vol_mean) else last["Volume"]
-
-        f2 = np.clip((last["Volume"] / (vol_mean + 1e-9)) / 2, 0, 1)
-
-        # 3. compression
-        atr_mean = df["ATR_NORM"].rolling(50).mean().iloc[-1]
-        atr_mean = atr_mean if not np.isnan(atr_mean) else last["ATR_NORM"]
-
-        f3 = np.clip(1 - (last["ATR_NORM"] / (atr_mean + 1e-9)), 0, 1)
-
-        # 4. trend weakness
-        sma = last["SMA50"]
-        if np.isnan(sma):
-            f4 = 0.5
-        else:
-            f4 = np.clip(1 - (last["Close"] / (sma + 1e-9) - 1), 0, 1)
-
-        # weighted model
-        raw = (0.35 * f1) + (0.25 * f2) + (0.25 * f3) + (0.15 * f4)
-
-        # stable sigmoid
-        prob = 1 / (1 + np.exp(-(raw - 0.5) * 5))
-
-        return float(np.clip(prob * 100, 0, 100))
-
-    except Exception as e:
-        st.error(f"Model error: {e}")
-        return 0.0
-
-
-# ----------------------------
-# 3. UI
-# ----------------------------
 ticker = st.text_input("Enter Ticker", "NVDA").upper()
 
-st.markdown("### Wyckoff Dashboard")
-
 if st.button("Run Analysis"):
-
     df = get_data(ticker)
-
     if df is None:
-        st.error("❌ אין דאטה מספיק או שהטיקר לא תקין")
-        st.stop()
-
-    # safe support/resistance
-    support = df["Low"].rolling(20).min().iloc[-1]
-    resistance = df["High"].rolling(20).max().iloc[-1]
-
-    if np.isnan(support) or np.isnan(resistance):
-        st.error("❌ לא ניתן לחשב support/resistance")
-        st.stop()
-
-    prob = get_accumulation_prob(df, support, resistance)
-
-    st.write("### Debug Info")
-    st.write(f"Rows: {len(df)}")
-    st.write(f"Support: {support:.2f}")
-    st.write(f"Resistance: {resistance:.2f}")
-    st.write(f"Probability: {prob:.2f}%")
-
-    # ----------------------------
-    # GAUGE
-    # ----------------------------
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=prob,
-        title={'text': "Accumulation Probability (%)"},
-        gauge={
-            'axis': {'range': [0, 100]},
-            'bar': {'color': "darkblue"},
-            'steps': [
-                {'range': [0, 40], 'color': "red"},
-                {'range': [40, 70], 'color': "orange"},
-                {'range': [70, 100], 'color': "green"}
-            ]
-        }
-    ))
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ----------------------------
-    # SIGNAL TEXT
-    # ----------------------------
-    if prob > 70:
-        st.success("💎 איסוף מוסדי אפשרי (High Probability)")
-    elif prob > 40:
-        st.warning("⚠️ קונסולידציה / אי ודאות")
+        st.error("לא נמצא דאטה מספק")
     else:
-        st.error("❌ אין סימני איסוף")
+        score, reasons = analyze_wyckoff(df)
+        
+        # Gauge
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number", value=score,
+            title={'text': "Institutional Absorption Score"},
+            gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "darkblue"}}
+        ))
+        st.plotly_chart(fig)
+        
+        # Explanation for Score
+        st.write("### ניתוח התוצאה:")
+        for r in reasons: st.write(f"- {r}")
+        if not reasons: st.write("לא זוהו סימני איסוף מובהקים.")
+        
+        # Decision
+        if score >= 100:
+            st.success("✅ כן: זוהו שני הסימנים המבניים לאיסוף מוסדי.")
+        elif score == 50:
+            st.warning("⚠️ לא חד משמעי: זוהה רק חלק מהתהליך (או פאניקה ללא שקט, או שקט ללא פאניקה).")
+        else:
+            st.error("❌ לא: לא נמצאו אינדיקטורים לפעילות מוסדית.")
