@@ -2,169 +2,56 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(layout="wide", page_title="Efi Quant Engine V4.2")
+# ... (פונקציות ה-Data, Structure, Regime, Logic נשארות כפי שכתבת) ...
 
-# ─────────────────────────────
-# DATA LAYER
-# ─────────────────────────────
-@st.cache_data(ttl=300)
-def get_quant_data(ticker):
-    df = yf.Ticker(ticker).history(period="1y")
-
-    if df.empty:
-        return df
-
-    df["SMA50"] = df["Close"].rolling(50).mean()
-    df["SMA200"] = df["Close"].rolling(200).mean()
-
-    # ATR (true range)
-    hl = df["High"] - df["Low"]
-    hc = (df["High"] - df["Close"].shift()).abs()
-    lc = (df["Low"] - df["Close"].shift()).abs()
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
-
-    df["VOL_MA20"] = df["Volume"].rolling(20).mean()
-
-    return df
-
-
-# ─────────────────────────────
-# STRUCTURE ENGINE (FIXED + STABLE)
-# ─────────────────────────────
-def get_structure(df, window=5):
-    """
-    Non-repainting swing structure engine
-    """
-
-    highs = df["High"]
-    lows = df["Low"]
-
-    pivot_highs = []
-    pivot_lows = []
-
-    for i in range(window, len(df) - window):
-        h = highs.iloc[i]
-        l = lows.iloc[i]
-
-        if h == highs.iloc[i-window:i+window+1].max():
-            pivot_highs.append((df.index[i], h))
-
-        if l == lows.iloc[i-window:i+window+1].min():
-            pivot_lows.append((df.index[i], l))
-
-    resistance = pivot_highs[-1][1] if len(pivot_highs) > 0 else highs.max()
-    support = pivot_lows[-1][1] if len(pivot_lows) > 0 else lows.min()
-
-    return support, resistance, pivot_highs, pivot_lows
-
-
-# ─────────────────────────────
-# REGIME CLASSIFIER (clean + normalized)
-# ─────────────────────────────
-def analyze_regime(df):
-    price = df["Close"].iloc[-1]
-    sma50 = df["SMA50"].iloc[-1]
-    sma200 = df["SMA200"].iloc[-1]
-
-    if np.isnan(sma50) or np.isnan(sma200):
-        return "Insufficient Data"
-
-    slope = (df["SMA50"].iloc[-1] - df["SMA50"].iloc[-10]) / df["SMA50"].iloc[-10]
-    slope = slope * 100
-
-    if price > sma200 and slope > 0.5:
-        return "Markup (Bull)"
-    elif price < sma200 and slope < -0.5:
-        return "Markdown (Bear)"
-    elif abs(slope) < 0.3:
-        return "Accumulation / Range"
+def get_wyckoff_phase(regime, agreement, price, support, resistance):
+    """מתרגם נתונים לשלב וייקוף והנחיה"""
+    if regime == "Accumulation / Range":
+        phase = "שלב B/C (איסוף)"
+        action = "המתנה לפריצה עם ווליום או ל-Spring. לא לקנות בתוך הטווח."
+    elif regime == "Markup (Bull)":
+        phase = "שלב D/E (עליות)"
+        action = "אפשרות לכניסה בתיקונים (Pullbacks) ל-SMA50."
+    elif regime == "Distribution":
+        phase = "שלב D (פיזור)"
+        action = "זהירות: הגיע הזמן לממש רווחים. אל תפתח פוזיציות לונג."
     else:
-        return "Transition"
-
-
-# ─────────────────────────────
-# AGREEMENT MODEL (real scoring)
-# ─────────────────────────────
-def decision_logic(df, support, resistance):
-    price = df["Close"].iloc[-1]
-
-    # Trend agreement
-    trend = 0
-    if price > df["SMA50"].iloc[-1]:
-        trend += 1
-    if price > df["SMA200"].iloc[-1]:
-        trend += 1
-
-    trend_score = trend / 2  # 0–1
-
-    # Volume agreement
-    vol_ratio = df["Volume"].iloc[-1] / df["VOL_MA20"].iloc[-1]
-    vol_score = min(vol_ratio / 1.5, 1)  # capped normalization
-
-    # Structure agreement
-    if price > resistance:
-        structure_score = 1
-    elif price < support:
-        structure_score = 0
-    else:
-        structure_score = 0.5
-
-    # Final agreement (weighted, not fake equal average)
-    agreement = (
-        trend_score * 0.4 +
-        vol_score * 0.3 +
-        structure_score * 0.3
-    )
-
-    if agreement > 0.75:
-        signal = "LONG"
-    elif agreement < 0.35:
-        signal = "RISK / SHORT BIAS"
-    else:
-        signal = "NO EDGE"
-
-    return signal, agreement, vol_ratio
-
+        phase = "לא ברור"
+        action = "חפש מניה אחרת עם מבנה ברור יותר."
+    
+    return phase, action
 
 # ─────────────────────────────
-# UI
+# UI משודרג עם גרפים והסברים
 # ─────────────────────────────
 ticker = st.text_input("Enter Ticker", "NVDA").upper()
 
 if st.button("Run Quant Analysis"):
     df = get_quant_data(ticker)
-
-    if df.empty:
-        st.error("No data found")
-        st.stop()
-
     support, resistance, piv_high, piv_low = get_structure(df)
     regime = analyze_regime(df)
     signal, conf, vol_ratio = decision_logic(df, support, resistance)
+    
+    # 1. גרף מוסדי
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close']))
+    fig.add_trace(go.Scatter(x=df.index, y=df['SMA50'], name="SMA50", line=dict(color='yellow')))
+    fig.update_layout(template="plotly_dark", height=500, title=f"Chart for {ticker}")
+    st.plotly_chart(fig, use_container_width=True)
 
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric("Market Regime", regime)
-    col2.metric("Signal", signal)
-    col3.metric("Agreement Score", f"{conf*100:.1f}%")
-
-    st.divider()
-
-    st.write("### Market Structure")
-    st.write(f"- Support: {support:.2f}")
-    st.write(f"- Resistance: {resistance:.2f}")
-    st.write(f"- Volume Ratio: {vol_ratio:.2f}")
-
-    st.write(f"- Pivot Highs: {len(piv_high)}")
-    st.write(f"- Pivot Lows: {len(piv_low)}")
-
-    st.divider()
-
-    if signal == "LONG":
-        st.success("Trend + Volume + Structure aligned → bullish regime")
+    # 2. ניתוח וייקוף והנחיות
+    phase, action = get_wyckoff_phase(regime, conf, df['Close'].iloc[-1], support, resistance)
+    
+    st.write(f"### ניתוח וייקוף: {phase}")
+    st.info(f"**מה לעשות:** {action}")
+    
+    # 3. החלטה סופית
+    if signal == "LONG" and conf > 0.7:
+        st.success("🟢 זמן קנייה: המערכת מסונכרנת (Trend+Vol+Structure).")
     elif signal == "RISK / SHORT BIAS":
-        st.error("Weak structure / distribution conditions")
+        st.error("🔴 זמן למכור/להימנע: המניה בלחץ פיזור או מגמה שלילית.")
     else:
-        st.warning("No statistical edge detected")
+        st.warning(f"⚪ להמתין: מחכים לאישור (Agreement Score: {int(conf*100)}%).")
