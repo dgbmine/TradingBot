@@ -101,4 +101,34 @@ if st.button("Generate Investment Brief"):
 
     # fallback אם אין מספיק נתונים
     resistance = max(piv_highs[-5:]) if len(piv_highs) >= 5 else df["High"].rolling(20).max().iloc[-1]
-    support = min(piv_lows[-5:]) if len(piv_lows) >= 5 else
+    support = min(piv_lows[-5:]) if len(piv_lows) >= 5 else df["Low"].rolling(20).min().iloc[-1]
+
+    st.write(f"### 📊 תדריך משימה עבור {ticker}")
+
+    report, score = get_transparency_report(df, support, resistance)
+
+    # הצגת השעון עם הכותרת המבוקשת
+    st.write("### האם הנייר באיסוף?")
+    fig_gauge = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = score * 100,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        gauge = {'axis': {'range': [0, 100]},
+                 'bar': {'color': "darkblue"},
+                 'steps' : [{'range': [0, 35], 'color': "red"},
+                            {'range': [35, 75], 'color': "orange"},
+                            {'range': [75, 100], 'color': "green"}]},
+        title = {'text': "ציון איסוף מוסדי (%)"}))
+    st.plotly_chart(fig_gauge)
+
+    for item in report:
+        st.write(item)
+
+    st.divider()
+
+    st.write("### למה אנחנו ממתינים?")
+    st.info(
+        "כדי להוריד סיכון בניהול התיק, אנחנו לא מחפשים 'ניחוש' של הכיוון. "
+        "אנחנו מחפשים **'אישור' (Confirmation)**. כרגע, חסר לנו האישור של הווליום ושל פריצת ההתנגדות. "
+        "ברגע שהם יופיעו – הציון יעלה ל-LONG."
+    )
