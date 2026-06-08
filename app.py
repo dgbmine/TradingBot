@@ -3,10 +3,10 @@ import yfinance as yf
 import pandas as pd
 
 st.set_page_config(page_title="Efi's Dashboard", layout="wide")
-st.title("📊 Efi's Institutional & Swing Dashboard")
+st.title("📊 Efi's Ultimate Trading Dashboard")
 
 ticker = st.text_input("הקלד טיקר:", "NVDA").upper()
-option = st.selectbox("בחר מצב עבודה:", ["אינדיקטורים טכניים", "איסוף מוסדי"])
+mode = st.radio("בחר מצב עבודה:", ["אינדיקטורים טכניים", "איסוף מוסדי"])
 
 if st.button("הפעל סריקה"):
     df = yf.Ticker(ticker).history(period="60d", interval="1h")
@@ -14,7 +14,7 @@ if st.button("הפעל סריקה"):
     if df.empty:
         st.error("לא נמצאו נתונים.")
     else:
-        if option == "אינדיקטורים טכניים":
+        if mode == "אינדיקטורים טכניים":
             indicator = st.selectbox("בחר אינדיקטור:", ["SMA_20", "SMA_50", "RSI", "MACD"])
             
             if indicator == "SMA_20":
@@ -23,7 +23,12 @@ if st.button("הפעל סריקה"):
                 rating = "🟢 קניה" if price > val else "🔴 מכירה"
                 st.metric("מחיר נוכחי", f"{price:.2f}", f"ממוצע 20: {val:.2f}")
                 st.write("דירוג:", rating)
-            
+            elif indicator == "SMA_50":
+                val = df['Close'].rolling(window=50).mean().iloc[-1]
+                price = df['Close'].iloc[-1]
+                rating = "🟢 קניה" if price > val else "🔴 מכירה"
+                st.metric("מחיר נוכחי", f"{price:.2f}", f"ממוצע 50: {val:.2f}")
+                st.write("דירוג:", rating)
             elif indicator == "RSI":
                 delta = df['Close'].diff()
                 gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -37,7 +42,15 @@ if st.button("הפעל סריקה"):
                 else: rating = "⚪ נייטרלי"
                 st.write(f"### ערך RSI: {val:.2f}")
                 st.write("דירוג:", rating)
-        
+            elif indicator == "MACD":
+                exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+                exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+                macd = exp1 - exp2
+                val = macd.iloc[-1]
+                rating = "🟢 קניה" if val > 0 else "🔴 מכירה"
+                st.write(f"### ערך MACD: {val:.2f}")
+                st.write("דירוג:", rating)
+
         else: # איסוף מוסדי
             avg_vol = df['Volume'].rolling(window=20).mean()
             accumulation = df[(df['Close'] < df['Open']) & (df['Volume'] > avg_vol * 1.5)]
