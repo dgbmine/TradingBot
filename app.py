@@ -37,18 +37,21 @@ def get_transparency_report(df, support, resistance):
     else:
         report.append("❌ המחיר מתחת לממוצע 50 - אין מומנטום קונים.")
         trend_score = 0
+
     if curr["VOL_Z"] > 1:
         report.append("✅ ווליום גבוה מהממוצע - יש עניין בשוק.")
         vol_score = 1
     else:
         report.append("❌ ווליום נמוך - השוק 'ישנוני', אין הוכחה לכניסת כסף מוסדי.")
         vol_score = 0
+
     if curr["Close"] > resistance:
         report.append("✅ פריצת רמת התנגדות - המבנה נפרץ כלפי מעלה.")
         struct_score = 1
     else:
         report.append("⚠️ מחיר בתוך טווח - אנחנו תקועים בין קונים למוכרים. תמתין לפריצה.")
         struct_score = 0.5
+
     final_score = (trend_score * 0.4) + (vol_score * 0.3) + (struct_score * 0.3)
     return report, final_score
 
@@ -61,14 +64,7 @@ if st.button("Generate Investment Brief"):
     df = get_data(ticker)
     piv_highs, piv_lows = find_pivots(df)
     
-    # חישוב זהיר של התנגדות ותמיכה כדי למנוע שגיאות
     resistance = float(max(piv_highs[-5:])) if len(piv_highs) >= 5 else float(df["High"].max())
     support = float(min(piv_lows[-5:])) if len(piv_lows) >= 5 else float(df["Low"].min())
 
-    st.write(f"### 📊 תדריך משימה עבור {ticker}")
-    report, score = get_transparency_report(df, support, resistance)
-
-    st.markdown("### האם הנייר באיסוף?")
-    fig_gauge = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = score * 100
+    st.write(f"### 📊 תדריך משימה עבור {
