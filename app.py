@@ -180,6 +180,22 @@ with col_v:
         st.rerun()
 
 st.markdown("---")
+
+# ============================================================
+# SHARED DATA FETCH
+# ============================================================
+@st.cache_data(ttl=3600)
+def get_data(ticker):
+    df = yf.Ticker(ticker).history(period="1y")
+    if len(df) < 100:
+        return None
+    df["VOL_MEAN"] = df["Volume"].rolling(20).mean()
+    df["BODY"] = abs(df["Close"] - df["Open"])
+    df["LOWER_SHADOW"] = df[["Open", "Close"]].min(axis=1) - df["Low"]
+    df["RANGE"] = df["High"] - df["Low"]
+    return df
+
+
 # ============================================================
 # SHARED GAUGE RENDERER
 # ============================================================
@@ -219,8 +235,6 @@ def render_gauge(score, verdict, verdict_color, mode="wyckoff"):
         paper_bgcolor="#0a1520", font_color="#e0eaf4"
     )
     return fig
-
-
 # ============================================================
 # SHARED OVERVIEW BAR CHART
 # ============================================================
@@ -306,7 +320,8 @@ def analyze_wyckoff(df):
             )
     criteria.append({"name": "Automatic Rally (AR)", "hit": ar_found,
                      "points": 20, "earned": ar_points, "explanation": ar_explanation})
-# 3. No Supply
+
+    # 3. No Supply
     avg_vol_10 = df.iloc[-10:]["Volume"].mean()
     global_mean = df["VOL_MEAN"].iloc[-1]
     no_supply = avg_vol_10 < global_mean * 0.7
@@ -333,8 +348,7 @@ def analyze_wyckoff(df):
                        ("לחץ מכירה קורס בזמן שמחיר יורד — Smart Money." if divergence
                         else "לא נמצאה דיברגנציה ברורה.")
     })
-
-    # 5. Trading Range
+# 5. Trading Range
     last_15 = df.iloc[-15:]
     tr_range_pct = (last_15["High"].max() - last_15["Low"].min()) / last_15["Low"].min()
     in_range = tr_range_pct < 0.12
@@ -390,6 +404,7 @@ def render_wyckoff_chart(df):
 #   ╚═══╝   ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝
 # PROFILE
 # ============================================================
+
 def build_volume_profile(df, bins=40):
     """Build a price-level volume profile histogram."""
     price_min = df["Low"].min()
@@ -472,8 +487,7 @@ def analyze_vp(df):
     recent_avg_vol = recent_profile_vols.mean()
     current_level_vol = recent_profile_vols[closest_recent]
     vol_surge = current_level_vol > recent_avg_vol * 1.8
-
-    # ---- SCORING ----
+# ---- SCORING ----
 
     # 1. Price below VAL (25 pts)
     bval_points = 25 if below_val else 0
@@ -505,7 +519,8 @@ def analyze_vp(df):
             "לא זוהו LVN משמעותיים מתחת למחיר. הסיכון לירידה חדה קטן יותר, אך גם פוטנציאל ה-snapback מוגבל."
         )
     })
-# 3. HVN above price (20 pts) — ceiling that muffles upside BUT signals where institutions loaded
+
+    # 3. HVN above price (20 pts) — ceiling that muffles upside BUT signals where institutions loaded
     hvn_points = 20 if has_hvn_above else 0
     score += hvn_points
     criteria.append({
@@ -575,6 +590,7 @@ def render_vp_chart(df, vp_data, ticker):
     poc = vp_data["poc"]
     vah = vp_data["vah"]
     val = vp_data["val"]
+
     # Normalize vol bars to fraction of chart width
     max_vol = vol_at_price.max()
     bar_width = 0.12  # fraction of price range
@@ -649,14 +665,12 @@ def render_vp_chart(df, vp_data, ticker):
     fig.update_xaxes(title_text="Vol %", row=1, col=2)
 
     return fig
-
-
 # ============================================================
 # ██╗    ██╗██╗   ██╗ ██████╗██╗  ██╗ ██████╗ ███████╗███████╗
 # WYCKOFF SCREEN
 # ============================================================
 def screen_wyckoff():
-st.markdown("""
+    st.markdown("""
     <div class="header-box wyckoff">
       <h2>⬛ WYCKOFF ACCUMULATION SCOUT</h2>
       <p>מחפש חתימות של <strong>איסוף מוסדי מוקדם</strong> לפי מתודולוגיית ריצ'רד וייקוף.
@@ -736,6 +750,7 @@ st.markdown("""
 
         fig_cmp, _ = render_comparison_chart(valid, "#4fc3f7")
         st.plotly_chart(fig_cmp, use_container_width=True)
+
     # Individual tabs
     st.markdown("---")
     st.markdown("### ניתוח פרטני")
@@ -847,7 +862,8 @@ def screen_vp():
     if not valid:
         st.error("לא נמצא דאטה תקין.")
         return
-# Overview
+
+    # Overview
     if len(valid) > 1:
         st.markdown("---")
         st.markdown("### סקירה כללית")
@@ -919,7 +935,6 @@ def screen_vp():
 
     st.markdown("""<div class="disclaimer">⚠️ אנליזה טכנית בלבד, אינה המלצת השקעה. תמיד בצע Due Diligence עצמאי.</div>""",
                 unsafe_allow_html=True)
-
 
 # ============================================================
 # ROUTER
