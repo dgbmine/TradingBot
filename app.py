@@ -1,57 +1,55 @@
 import streamlit as st
 import yfinance as yf
-import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide", page_title="Efi Quant Engine V4.3")
+st.set_page_config(layout="wide", page_title="Efi Family Office Engine")
 
-# 1. ניהול דאטה (עם טיפול בשגיאות)
 @st.cache_data(ttl=300)
 def get_data(ticker):
-    try:
-        df = yf.Ticker(ticker).history(period="1y")
-        if df.empty: return None
-        df["SMA50"] = df["Close"].rolling(50).mean()
-        df["SMA200"] = df["Close"].rolling(200).mean()
-        df["VOL_MA20"] = df["Volume"].rolling(20).mean()
-        return df
-    except: return None
+    df = yf.Ticker(ticker).history(period="1y")
+    df["SMA50"] = df["Close"].rolling(50).mean()
+    df["VOL_MA20"] = df["Volume"].rolling(20).mean()
+    return df
 
-# 2. ניתוח וייקוף עמוק
-def get_wyckoff_insights(df):
+def get_transparency_report(df, support, resistance):
+    """הסבר בשפה פשוטה למה אנחנו ממתינים"""
     curr = df.iloc[-1]
-    vol_ratio = curr["Volume"] / df["VOL_MA20"].iloc[-1]
     
-    # זיהוי מצב
-    if curr["Close"] > df["SMA200"].iloc[-1] and vol_ratio > 1.2:
-        return "Markup (שלב D)", "המגמה חזקה. חפש כניסה בתיקונים (Pullbacks). אל תמכור עדיין.", 0.8
-    elif curr["Close"] < df["SMA50"].iloc[-1] and vol_ratio > 1.5:
-        return "Distribution (שלב C/D)", "סימני חולשה. המוסדיים מחלקים סחורה. צא מהפוזיציה.", 0.2
+    report = []
+    # 1. בדיקת טרנד
+    if curr["Close"] > df["SMA50"].iloc[-1]:
+        report.append("✅ המחיר מעל ממוצע 50 - סימן חיובי לטווח קצר.")
     else:
-        return "Accumulation / Range", "דשדוש. אין כיוון ברור. המתנה לפריצה או ל-Spring.", 0.5
+        report.append("❌ המחיר מתחת לממוצע 50 - אין מומנטום קונים.")
+        
+    # 2. בדיקת ווליום
+    if curr["Volume"] > df["VOL_MA20"].iloc[-1]:
+        report.append("✅ ווליום גבוה מהממוצע - יש עניין בשוק.")
+    else:
+        report.append("❌ ווליום נמוך - השוק 'ישנוני', אין הוכחה לכניסת כסף מוסדי.")
+        
+    # 3. בדיקת מבנה
+    if curr["Close"] > resistance:
+        report.append("✅ פריצת רמת התנגדות - המבנה נפרץ כלפי מעלה.")
+    else:
+        report.append("⚠️ מחיר בתוך טווח - אנחנו תקועים בין קונים למוכרים. תמתין לפריצה.")
+        
+    return report
 
-# 3. תצוגה
 ticker = st.text_input("Enter Ticker", "NVDA").upper()
 
-if st.button("Run Engine"):
+if st.button("Generate Investment Brief"):
     df = get_data(ticker)
+    # לצורך הדוגמה נניח תמיכה/התנגדות מחושבים
+    res = df['High'].rolling(20).max().iloc[-1]
+    sup = df['Low'].rolling(20).min().iloc[-1]
     
-    if df is None:
-        st.error("לא ניתן לטעון נתונים. בדוק את הטיקר.")
-    else:
-        # גרף
-        fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(template="plotly_dark", height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    st.write(f"### 📊 תדריך משימה עבור {ticker}")
+    report = get_transparency_report(df, sup, res)
+    
+    for item in report:
+        st.write(item)
         
-        # ניתוח
-        phase, action, score = get_wyckoff_insights(df)
-        
-        st.write(f"### שלב שוק: {phase}")
-        st.write(f"**מה לעשות:** {action}")
-        st.progress(score)
-        
-        if score > 0.7: st.success("סיכוי גבוה ללונג")
-        elif score < 0.3: st.error("סיכון גבוה")
-        else: st.warning("אין יתרון סטטיסטי (No Edge)")
+    st.divider()
+    st.write("### למה אנחנו ממתינים?")
+    st.info("כדי להוריד סיכון בניהול התיק, אנחנו לא מחפשים 'ניחוש' של הכיוון. אנחנו מחפשים **'אישור' (Confirmation)**. כרגע, חסר לנו האישור של הווליום ושל פריצת ההתנגדות. ברגע שהם יופיעו – הציון יעלה ל-LONG.")
