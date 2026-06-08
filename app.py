@@ -51,13 +51,16 @@ if st.button("הפעל סריקה"):
                 st.write(f"### ערך MACD: {val:.2f}")
                 st.write("דירוג:", rating)
 
-        else: # איסוף מוסדי
-            avg_vol = df['Volume'].rolling(window=20).mean()
-            accumulation = df[(df['Close'] < df['Open']) & (df['Volume'] > avg_vol * 1.5)]
-            count = len(accumulation)
+        else: # איסוף מוסדי משוכלל
+            avg_vol = df['Volume'].rolling(window=50).mean()
+            accumulation = df[(df['Close'] < df['Open']) & (df['Volume'] > avg_vol * 2.0)]
+            recent_events = accumulation.tail(24)
+            count = len(recent_events)
+            
+            st.write(f"אירועי איסוף ב-24 השעות האחרונות: {count}")
             if count >= 3:
-                st.success(f"✅ איסוף מוסדי מזוהה! ({count} אירועים)")
+                st.success(f"✅ איסוף מוסדי מרוכז מזוהה! ({count} אירועים)")
             else:
-                st.warning(f"❌ לא מזהה איסוף מוסדי ({count} אירועים)")
+                st.warning(f"❌ לא מזהה ריכוז של איסוף מוסדי.")
         
         st.line_chart(df['Close'])
