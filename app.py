@@ -53,25 +53,45 @@ def get_transparency_report(df, support, resistance):
     # 1. טרנד משופר (מחיר + שיפוע)
     if curr["Close"] > df["SMA50"].iloc[-1] and curr["SMA50_SLOPE"] > 0:
         report.append("✅ המחיר מעל ממוצע 50 - סימן חיובי לטווח קצר.")
+        trend_score = 1
     else:
         report.append("❌ המחיר מתחת לממוצע 50 - אין מומנטום קונים.")
+        trend_score = 0
 
     # 2. ווליום חכם (Z-score)
     if curr["VOL_Z"] > 1:
         report.append("✅ ווליום גבוה מהממוצע - יש עניין בשוק.")
+        vol_score = 1
     else:
         report.append("❌ ווליום נמוך - השוק 'ישנוני', אין הוכחה לכניסת כסף מוסדי.")
+        vol_score = 0
 
     # 3. מבנה שוק מבוסס פיבוטים
     if curr["Close"] > resistance:
         report.append("✅ פריצת רמת התנגדות - המבנה נפרץ כלפי מעלה.")
+        struct_score = 1
     else:
         report.append("⚠️ מחיר בתוך טווח - אנחנו תקועים בין קונים למוכרים. תמתין לפריצה.")
+        struct_score = 0.5
 
-    return report
+    # חישוב ציון משוקלל ל-Gauge
+    final_score = (trend_score * 0.4) + (vol_score * 0.3) + (struct_score * 0.3)
+    
+    return report, final_score
 
 
 ticker = st.text_input("Enter Ticker", "NVDA").upper()
+
+# כפתור מידע על השיטה
+if st.button("ℹ️ איך האפליקציה עובדת?"):
+    st.info("""
+    ### השיטה שלנו: Institutional Market Structure
+    האפליקציה משתמשת בשילוב של שלוש שכבות ניתוח מוסדיות:
+    1. **Trend Analysis (וייקוף):** זיהוי מגמה לפי ממוצעים נעים ושיפועים. המטרה היא להיות בצד הנכון של השוק.
+    2. **Smart Volume (VSA):** שימוש ב-Z-Score כדי לבדוק האם הווליום חריג. ווליום גבוה בפריצה מעיד על כניסת כסף גדול (מוסדי).
+    3. **Liquidity Structure:** פיבוטים המגדירים תמיכה והתנגדות. אנחנו לא קונים בתוך הטווח, אלא רק בפריצות אישור.
+    **המטרה:** להוריד סיכון על ידי המתנה ל'אישור' (Confirmation) של שלושת הפרמטרים במקביל.
+    """)
 
 if st.button("Generate Investment Brief"):
     df = get_data(ticker)
@@ -85,7 +105,20 @@ if st.button("Generate Investment Brief"):
 
     st.write(f"### 📊 תדריך משימה עבור {ticker}")
 
-    report = get_transparency_report(df, support, resistance)
+    report, score = get_transparency_report(df, support, resistance)
+
+    # הצגת שעון המחוגים (Gauge)
+    fig_gauge = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = score * 100,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        gauge = {'axis': {'range': [0, 100]},
+                 'bar': {'color': "darkblue"},
+                 'steps' : [{'range': [0, 35], 'color': "red"},
+                            {'range': [35, 75], 'color': "orange"},
+                            {'range': [75, 100], 'color': "green"}]},
+        title = {'text': "מדד הסכמה ללונג"}))
+    st.plotly_chart(fig_gauge)
 
     for item in report:
         st.write(item)
