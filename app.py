@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from backtest_engine import BacktestEngine, BacktestConfig
+
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
