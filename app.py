@@ -51,6 +51,7 @@ h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
 .header-box.vwap      h2{color:#4caf7d;}
 .header-box.composite h2{color:#ffa726;}
 .header-box p{color:#b0c8e0;font-size:0.92rem;margin:6px 0;}
+
 .tag{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:0.75rem;padding:2px 8px;border-radius:4px;margin:3px 2px;}
 .tag-w{background:#1e3a5f;border:1px solid #4fc3f7;color:#4fc3f7;}
 .tag-v{background:#2a1a4a;border:1px solid #ab47bc;color:#ce93d8;}
@@ -558,12 +559,12 @@ def screen_composite():
             hits,errors=run_market_scan(analyze_composite,"composite",min_s,max_r); render_scan_results(hits,errors,"composite",min_s)
 
 # ============================================================
-# MARKET SCAN ENGINE
+# MARKET SCAN ENGINE & HELPERS
 # ============================================================
 def run_market_scan(analyze_fn, mode, score_threshold=80, max_results=10):
-    hits=[]; errors=[]; total=len(SCAN_UNIVERSE); accent = {"wyckoff":"#4fc3f7","vp":"#ce93d8","vwap":"#4caf7d","composite":"#ffa726"}.get(mode,"#fff")
+    hits=[]; errors=[]; total=len(SCAN_UNIVERSE)
     st.markdown(f"""<div style="background:#0a1520;border:1px solid #1e3040;border-radius:8px;padding:12px 18px;direction:rtl;color:#b0c8e0;font-size:0.85rem;margin-bottom:16px;">🔍 סורק <b style="color:#fff">{total}</b> מניות | ציון ≥ <b style="color:#ffa726">{score_threshold}</b></div>""", unsafe_allow_html=True)
-    prog=st.progress(0); status=st.empty(); hits_ph=st.empty()
+    prog=st.progress(0)
     for i,ticker in enumerate(SCAN_UNIVERSE):
         if len(hits)>=max_results: break
         prog.progress((i+1)/total); df=get_data(ticker)
@@ -580,10 +581,6 @@ def render_scan_results(hits,errors,mode,score_threshold=80):
     top8=hits[:8]; cols=st.columns(min(len(top8),4))
     for idx,h in enumerate(top8):
         with cols[idx%4]: st.markdown(f"""<div class="overview-card {card_class}"><div class="ticker-label" style="color:{accent}">{h['ticker']}</div><div class="score-big" style="color:{h['verdict_color']}">{h['score']}</div><div class="verdict-label">{h['verdict']}</div></div>""",unsafe_allow_html=True)
-    pick=st.selectbox("בחר מניה לניתוח",[h["ticker"] for h in hits])
-    if st.button("▶ פתח ניתוח"):
-        df=get_data(pick)
-        if df: _dispatch_detail(pick,df,mode)
 
 def _dispatch_detail(t,df,mode):
     if mode=="wyckoff": res=analyze_wyckoff(df); _render_w_detail(t,df,*res)
@@ -613,7 +610,7 @@ def _scan_controls(mode, scan_key_prefix):
 
 def _ticker_input(key_prefix):
     ci,cb=st.columns([4,1])
-    with ci: raw=st.text_input("טיקרים","NVDA, MSFT",key=f"{key_prefix}_input")
+    with ci: raw=st.text_input("טיקרים","NVDA",key=f"{key_prefix}_input")
     with cb: st.markdown("<div style='margin-top:28px'></div>",unsafe_allow_html=True); run=st.button("▶ הרץ",key=f"{key_prefix}_run")
     return raw,run
 
@@ -628,6 +625,7 @@ def _wrap_vp(t,df,res):   _render_vp_detail(t,df,res[0],res[1],res[2],res[3],res
 def _wrap_vw(t,df,res):   _render_vw_detail(t,df,res[0],res[1],res[2],res[3],res[4])
 def _wrap_comp(t,df,res): _render_composite_detail(t,df,res[0],res[1],res[2],res[3],res[4],res[5],res[6])
 
+
 # ============================================================
 # NEW BACKTEST SCREEN
 # ============================================================
@@ -635,17 +633,78 @@ def screen_backtest():
     st.markdown("""
     <div class="header-box composite" style="background:linear-gradient(135deg,#121a24,#1a2636);border:1px solid #2a4a6a;">
       <h2>📈 BACKTEST ENGINE</h2>
-      <p>הרצת סימולציות ואסטרטגיות על נתוני עבר.</p>
+      <p>הרצת סימולציות על נתוני עבר באמצעות מנוע פקטורי האיסוף המוסדי (35 Factors).</p>
     </div>""",unsafe_allow_html=True)
     
-    st.markdown("### הגדרות הבק-טסטינג")
-    try:
-        # כאן המערכת מריצה ומציגה את הקוד של backtest_engine.py
-        # אם יש לך פונקציה מסוימת שמפעילה את ה-UI שם (כמו run_ui או main), תסיר את ה-# מהשורה הבאה:
-        # backtest_engine.run_ui()
-        st.info("💡 מודול backtest_engine זמין ומחובר! ברגע שתגדיר בתוכו פונקציה לתצוגה, תוכל להריץ אותה ישירות מכאן.")
-    except Exception as e:
-        st.error(f"⚠️ שגיאה בטעינת הבק-טסט: {e}")
+    # אזור חיפוש
+    c1, c2 = st.columns([4, 1])
+    with c1:
+        ticker = st.text_input("סימול מניה (לדוגמה: NVDA, SPY, TSLA)", "NVDA", key="bt_ticker")
+    with c2:
+        st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+        run_btn = st.button("▶ הרץ סימולציה", use_container_width=True, type="primary")
+        
+    if run_btn:
+        ticker = ticker.upper().strip()
+        with st.spinner(f"מריץ סימולציית הון על {ticker}..."):
+            try:
+                # קריאה למנוע שלך מתוך backtest_engine.py
+                engine = backtest_engine.BacktestEngine()
+                res = engine.run(ticker)
+                
+                if "error" in res:
+                    st.error(res["error"])
+                else:
+                    m = res["metrics"]
+                    
+                    st.markdown("### 📊 תוצאות סימולציה")
+                    # כרטיסיות נתונים מרכזיות
+                    col1, col2, col3, col4, col5 = st.columns(5)
+                    col1.metric("סה״כ עסקאות", m.get("total_trades", 0))
+                    col2.metric("אחוזי הצלחה (Win Rate)", f"{m.get('win_rate', 0)*100:.1f}%")
+                    col3.metric("תשואה כוללת", f"{m.get('total_return', 0)*100:.1f}%")
+                    col4.metric("דרודאון מקסימלי", f"{m.get('max_drawdown', 0)*100:.1f}%")
+                    col5.metric("Sharpe Ratio", m.get("sharpe", 0))
+                    
+                    st.markdown("### 📈 עקומת הון (Equity Curve)")
+                    equity = res["equity"]
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=equity.index, 
+                        y=equity.values, 
+                        fill='tozeroy', 
+                        mode='lines',
+                        line=dict(color='#4fc3f7', width=2),
+                        name="Capital"
+                    ))
+                    fig.update_layout(
+                        height=400, 
+                        paper_bgcolor="#0a1520", 
+                        plot_bgcolor="#0d1b2a", 
+                        font_color="#e0eaf4", 
+                        margin=dict(t=20, b=20, l=10, r=10)
+                    )
+                    fig.update_xaxes(gridcolor="#1e3040")
+                    fig.update_yaxes(gridcolor="#1e3040", title_text="הון ($)")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("### 🔍 הצצה למנוע (Under the Hood) - נתונים אחרונים")
+                    st.caption("מציג את התפלגות 35 הפקטורים עבור היום האחרון שנבדק.")
+                    audit_data, final_score = engine.audit_date(ticker)
+                    
+                    st.info(f"🏆 ציון מוסדי (CIS) אחרון: {final_score}/100")
+                    
+                    # הופך את רשימת המילונים שהמנוע שלך מחזיר לטבלה נוחה ב-Streamlit
+                    audit_df = pd.DataFrame(audit_data)
+                    if not audit_df.empty:
+                        audit_display = audit_df[["status", "label", "points", "pct_of_score"]].copy()
+                        audit_display.columns = ["סטטוס", "פקטור", "נקודות שתרם", "אחוז מהציון"]
+                        st.dataframe(audit_display, use_container_width=True, hide_index=True)
+                    else:
+                        st.warning("אין נתוני Audit זמינים.")
+            
+            except Exception as e:
+                st.error(f"⚠️ אירעה שגיאה: {e}")
 
 # ============================================================
 # ROUTER DISPATCH
