@@ -1,5 +1,5 @@
 cat > /mnt/user-data/outputs/backtest_engine.py << 'PYEOF'
-"""
+
 backtest_engine.py
 ==================
 Vectorized Institutional Accumulation Backtesting Engine
