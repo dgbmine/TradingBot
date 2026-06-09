@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import backtest_engine
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
@@ -31,7 +32,7 @@ SCAN_UNIVERSE = list(dict.fromkeys([
 ]))
 
 # ============================================================
-# CSS
+# CSS DESIGN
 # ============================================================
 st.markdown("""
 <style>
@@ -50,7 +51,6 @@ h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
 .header-box.vwap      h2{color:#4caf7d;}
 .header-box.composite h2{color:#ffa726;}
 .header-box p{color:#b0c8e0;font-size:0.92rem;margin:6px 0;}
-
 .tag{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:0.75rem;padding:2px 8px;border-radius:4px;margin:3px 2px;}
 .tag-w{background:#1e3a5f;border:1px solid #4fc3f7;color:#4fc3f7;}
 .tag-v{background:#2a1a4a;border:1px solid #ab47bc;color:#ce93d8;}
@@ -119,18 +119,19 @@ h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
 # SESSION STATE
 # ============================================================
 for k,v in [("mode","wyckoff"),("w_sub","specific"),("vp_sub","specific"),
-            ("vw_sub","specific"),("comp_sub","specific")]:
+            ("vw_sub","specific"),("comp_sub","specific"),("backtest_sub","specific")]:
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ============================================================
-# TOP NAV
+# TOP NAV (5 Columns with Backtest)
 # ============================================================
 st.markdown("# INSTITUTIONAL SCOUT PRO")
-c1,c2,c3,c4 = st.columns(4)
+c1,c2,c3,c4,c5 = st.columns(5)
 nav = [("wyckoff","⬛  Wyckoff"),("vp","🔮  Volume Profile"),
-       ("vwap","📐  VWAP Deviation"),("composite","🏆  Composite Score")]
-cols = [c1,c2,c3,c4]
+       ("vwap","📐  VWAP Deviation"),("composite","🏆  Composite Score"),
+       ("backtest","📈  Backtest")]
+cols = [c1,c2,c3,c4,c5]
 for col,(mode_key,label) in zip(cols,nav):
     with col:
         if st.button(label, use_container_width=True,
@@ -140,7 +141,7 @@ for col,(mode_key,label) in zip(cols,nav):
 st.markdown("---")
 
 # ============================================================
-# DATA
+# DATA INTAKE
 # ============================================================
 @st.cache_data(ttl=3600)
 def get_data(ticker):
@@ -205,7 +206,7 @@ def render_comparison_chart(valid, mode):
     return fig, st_sorted
 
 # ============================================================
-# WYCKOFF
+# WYCKOFF METHOD
 # ============================================================
 def analyze_wyckoff(df):
     score=0; criteria=[]
@@ -262,8 +263,56 @@ def render_wyckoff_chart(df):
     fig.update_xaxes(gridcolor="#1e3040"); fig.update_yaxes(gridcolor="#1e3040")
     return fig
 
+def screen_wyckoff():
+    st.markdown("""
+    <div class="header-box wyckoff">
+      <h2>⬛ WYCKOFF ACCUMULATION SCOUT</h2>
+      <p>מחפש חתימות של <strong>איסוף מוסדי מוקדם</strong> לפי מתודולוגיית ריצ'רד וייקוף.
+      מוסדיים בונים פוזיציות בשקט כשהציבור פוחד — הבוט מזהה את חמש החתימות הקלאסיות.</p>
+      <p>
+        <span class="tag tag-w">SC – Selling Climax · 25 נק'</span>
+        <span class="tag tag-w">AR – Automatic Rally · 20 נק'</span>
+        <span class="tag tag-w">No Supply · 20 נק'</span>
+        <span class="tag tag-w">Price–Vol Divergence · 20 נק'</span>
+        <span class="tag tag-w">Trading Range · 15 נק'</span>
+      </p>
+      <p>
+        <strong>SC:</strong> ווליום ≥2× ממוצע + זנב תחתון — פאניקה שנבלמת ע"י קונים גדולים.<br>
+        <strong>AR:</strong> עלייה ≥4% תוך 10 ימים — אישור ראשון להסרת היצע.<br>
+        <strong>No Supply:</strong> ווליום &lt;70% מהממוצע — המוכרים נעלמו.<br>
+        <strong>Divergence:</strong> מחיר יורד אבל ווליום קורס — לחץ מתייבש.<br>
+        <strong>Trading Range:</strong> טווח &lt;12% ב-15 ימים — צבירה שקטה.
+      </p>
+      <p style="color:#607d8b;font-size:0.82rem;">⚠️ תנאי מקדים: ירידה ≥12% מהשיא.</p>
+    </div>""",unsafe_allow_html=True)
+
+    c1,c2=st.columns(2)
+    with c1:
+        if st.button("🎯 מניות ספציפיות",use_container_width=True,
+                     type="primary" if st.session_state.w_sub=="specific" else "secondary",key="w_sub_spec"):
+            st.session_state.w_sub="specific"; st.rerun()
+    with c2:
+        if st.button("🌐 סריקת שוק",use_container_width=True,
+                     type="primary" if st.session_state.w_sub=="scan" else "secondary",key="w_sub_scan"):
+            st.session_state.w_sub="scan"; st.rerun()
+    st.markdown("")
+
+    if st.session_state.w_sub=="specific":
+        raw,run=_ticker_input("w")
+        if run: _run_specific(raw,"wyckoff",analyze_wyckoff,_wrap_w,"w_sub")
+    else:
+        st.markdown("""<div style="background:#0f1a10;border:1px solid #2a4a2a;border-radius:8px;
+            padding:14px 20px;direction:rtl;color:#b0d8b0;font-size:0.88rem;margin-bottom:16px;">
+            הסריקה עוברת על ~200 מניות מ-S&P 500, Nasdaq ומגזרים שונים.</div>""",unsafe_allow_html=True)
+        min_s,max_r=_scan_controls("wyckoff","w_sc")
+        if st.button("🚀 התחל סריקת שוק — Wyckoff",use_container_width=True,key="w_scan_go"):
+            hits,errors=run_market_scan(analyze_wyckoff,"wyckoff",min_s,max_r)
+            render_scan_results(hits,errors,"wyckoff",min_s)
+
+    st.markdown("""<div class="disclaimer">⚠️ אנליזה טכנית בלבד, אינה המלצת השקעה.</div>""",unsafe_allow_html=True)
+
 # ============================================================
-# VOLUME PROFILE
+# VOLUME PROFILE METHOD
 # ============================================================
 def build_volume_profile(df, bins=40):
     mn=df["Low"].min(); mx=df["High"].max()
@@ -327,7 +376,7 @@ def render_vp_chart(df,vpd,ticker):
     for lv,cl,lb in [(poc,"#ce93d8","POC"),(vah,"#4fc3f7","VAH"),(val,"#4fc3f7","VAL")]:
         fig.add_trace(go.Scatter(x=xr,y=[lv,lv],mode="lines+text",line=dict(color=cl,width=1.5,dash="dash"),
             text=["",f" {lb}:{lv:.2f}"],textposition="top right",textfont=dict(color=cl,size=10),name=lb),row=1,col=1)
-    fig.add_trace(go.Scatter(x=xr,y=[cur,cur],mode="lines",line=dict(color="#fff",width=1,dash="dot"),name=f"Now:{cur:.2f}"),row=1,col=1)
+    fig.add_trace(go.Scatter(xr,y=[cur,cur],mode="lines",line=dict(color="#fff",width=1,dash="dot"),name=f"Now:{cur:.2f}"),row=1,col=1)
     fig.add_trace(go.Bar(x=vap/vap.max()*100,y=mids,orientation='h',marker_color=bc,name="VP",opacity=0.9,width=step*0.85),row=1,col=2)
     fig.update_layout(height=500,paper_bgcolor="#0a1520",plot_bgcolor="#0d1b2a",font_color="#e0eaf4",
                       xaxis_rangeslider_visible=False,legend=dict(orientation="h",y=1.04,x=0,font=dict(size=10)),
@@ -335,560 +384,6 @@ def render_vp_chart(df,vpd,ticker):
     fig.update_xaxes(gridcolor="#1e3040"); fig.update_yaxes(gridcolor="#1e3040")
     fig.update_xaxes(title_text="Vol %",row=1,col=2)
     return fig
-
-# ============================================================
-# VWAP DEVIATION
-# ============================================================
-def compute_vwap(df):
-    """Annual anchored VWAP with rolling std bands."""
-    tp = (df["High"] + df["Low"] + df["Close"]) / 3
-    cum_tpv = (tp * df["Volume"]).cumsum()
-    cum_vol = df["Volume"].cumsum()
-    vwap = cum_tpv / cum_vol
-    # Rolling std of (close - vwap)
-    dev = df["Close"] - vwap
-    rolling_std = dev.rolling(20).std()
-    return vwap, dev, rolling_std
-
-def analyze_vwap(df):
-    score=0; criteria=[]
-    vwap, dev, rolling_std = compute_vwap(df)
-    cur = df["Close"].iloc[-1]
-    cur_vwap = vwap.iloc[-1]
-    cur_dev  = dev.iloc[-1]
-    cur_std  = rolling_std.iloc[-1]
-
-    # --- 1. Price below VWAP by >= 1 std (25 pts) ---
-    below_1std = cur_dev <= -1.0 * cur_std
-    below_2std = cur_dev <= -2.0 * cur_std
-    pts_below = 25 if below_2std else 15 if below_1std else 0
-    score += pts_below
-    std_ratio = abs(cur_dev) / cur_std if cur_std > 0 else 0
-    criteria.append({"name":"סטיית מחיר מה-VWAP","hit":pts_below>0,"points":25,"earned":pts_below,
-        "explanation":(
-            f"מחיר ({cur:.2f}) נמצא {std_ratio:.1f}σ מתחת ל-VWAP ({cur_vwap:.2f}). "
-            +("דיסקאונט של 2σ+ — סטייה קיצונית, הסתברות גבוהה לחזרה." if below_2std
-              else "דיסקאונט של 1σ — מחיר נמוך ביחס לממוצע המשוקלל." if below_1std
-              else "מחיר קרוב ל-VWAP או מעליו — אין דיסקאונט.")
-        )})
-
-    # --- 2. VWAP slope flattening (20 pts) ---
-    vwap_20 = vwap.iloc[-20:]
-    slope_early = (vwap_20.iloc[10] - vwap_20.iloc[0]) / vwap_20.iloc[0]
-    slope_late  = (vwap_20.iloc[-1] - vwap_20.iloc[-10]) / vwap_20.iloc[-10]
-    flattening  = (slope_early < -0.005) and (slope_late > slope_early * 0.5)
-    flat_pts = 20 if flattening else 0; score += flat_pts
-    criteria.append({"name":"VWAP Slope מתיישב","hit":flattening,"points":20,"earned":flat_pts,
-        "explanation":(
-            f"שיפוע מוקדם: {slope_early*100:+.2f}% | שיפוע מאוחר: {slope_late*100:+.2f}%. "
-            +("ה-VWAP מתיישב — המומנטום השלילי נחלש, מוסדיים מתחילים לספוג." if flattening
-              else "ה-VWAP עדיין במגמה שלילית ברורה — המומנטום לא השתנה.")
-        )})
-
-    # --- 3. Volume expanding as price approaches VWAP (20 pts) ---
-    last_10 = df.iloc[-10:]
-    price_moving_up = last_10["Close"].iloc[-1] > last_10["Close"].iloc[0]
-    vol_expanding   = last_10["Volume"].iloc[-5:].mean() > last_10["Volume"].iloc[:5].mean() * 1.2
-    approach_pts = 20 if (price_moving_up and vol_expanding) else 0; score += approach_pts
-    v_ratio = last_10["Volume"].iloc[-5:].mean() / last_10["Volume"].iloc[:5].mean()
-    criteria.append({"name":"נפח עולה עם התקרבות ל-VWAP","hit":approach_pts>0,"points":20,"earned":approach_pts,
-        "explanation":(
-            f"מחיר {'עולה' if price_moving_up else 'יורד'} | ווליום: {v_ratio:.2f}x הממוצע הקודם. "
-            +("מחיר מתקרב ל-VWAP עם נפח גובר — מוסדיים נכנסים." if approach_pts>0
-              else "לא נראית ספיגה פעילה עם נפח ביחס ל-VWAP.")
-        )})
-
-    # --- 4. Anchored VWAP from recent low (20 pts) ---
-    low_idx = df["Low"].iloc[-65:].idxmin()
-    post_low = df.loc[low_idx:]
-    if len(post_low) >= 5:
-        tp_post = (post_low["High"]+post_low["Low"]+post_low["Close"])/3
-        avwap = (tp_post * post_low["Volume"]).cumsum() / post_low["Volume"].cumsum()
-        above_avwap = cur > avwap.iloc[-1]
-        avwap_val = avwap.iloc[-1]
-    else:
-        above_avwap = False; avwap_val = cur
-    avwap_pts = 20 if above_avwap else 0; score += avwap_pts
-    low_date = low_idx.strftime('%d/%m/%Y') if hasattr(low_idx,'strftime') else str(low_idx)[:10]
-    criteria.append({"name":"מעל Anchored VWAP מהשפל","hit":above_avwap,"points":20,"earned":avwap_pts,
-        "explanation":(
-            f"Anchored VWAP מהשפל ({low_date}): {avwap_val:.2f}. "
-            +(f"מחיר ({cur:.2f}) נסחר מעל — מבנה עולה מהשפל, סימן בריאות מבנית." if above_avwap
-              else f"מחיר ({cur:.2f}) עדיין מתחת ל-AVWAP — לא בוצעה החלמה מהשפל.")
-        )})
-
-    # --- 5. Std band contracting (15 pts) ---
-    std_early = rolling_std.iloc[-20:-10].mean()
-    std_late  = rolling_std.iloc[-10:].mean()
-    contracting = (std_late < std_early * 0.85) if (std_early > 0) else False
-    cont_pts = 15 if contracting else 0; score += cont_pts
-    criteria.append({"name":"סטיית תקן מתכווצת","hit":contracting,"points":15,"earned":cont_pts,
-        "explanation":(
-            f"σ מוקדם: {std_early:.3f} | σ מאוחר: {std_late:.3f}. "
-            +("הסטיה מתכווצת — תנודתיות יורדת, המחיר מתייצב סביב VWAP." if contracting
-              else "הסטיה לא מתכווצת — המחיר עדיין תנודתי.")
-        )})
-
-    vd = "מיקום VWAP אופטימלי לכניסה" if score>=75 else "סטייה חלקית" if score>=45 else "אין הזדמנות VWAP"
-    vc = "#4caf7d" if score>=75 else "#ffa726" if score>=45 else "#ef5350"
-    vwap_data = {"vwap":vwap,"dev":dev,"rolling_std":rolling_std,"cur_vwap":cur_vwap,"cur_std":cur_std}
-    return score,criteria,vd,vc,vwap_data
-
-def render_vwap_chart(df, vwap_data, ticker):
-    dc = df.iloc[-65:].copy()
-    vwap = vwap_data["vwap"].reindex(dc.index)
-    std  = vwap_data["rolling_std"].reindex(dc.index)
-    fig = make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.65,0.35],vertical_spacing=0.04)
-
-    # Candles
-    fig.add_trace(go.Candlestick(x=dc.index,open=dc["Open"],high=dc["High"],low=dc["Low"],close=dc["Close"],
-        increasing_line_color="#26a69a",decreasing_line_color="#ef5350",name="Price"),row=1,col=1)
-    # VWAP
-    fig.add_trace(go.Scatter(x=dc.index,y=vwap,line=dict(color="#ffa726",width=2),name="VWAP"),row=1,col=1)
-    # 1σ bands
-    fig.add_trace(go.Scatter(x=dc.index,y=vwap+std,line=dict(color="#4caf7d",width=1,dash="dot"),name="+1σ"),row=1,col=1)
-    fig.add_trace(go.Scatter(x=dc.index,y=vwap-std,line=dict(color="#4caf7d",width=1,dash="dot"),
-        fill='tonexty',fillcolor='rgba(76,175,61,0.05)',name="-1σ"),row=1,col=1)
-    # 2σ bands
-    fig.add_trace(go.Scatter(x=dc.index,y=vwap+2*std,line=dict(color="#ef5350",width=1,dash="dash"),name="+2σ"),row=1,col=1)
-    fig.add_trace(go.Scatter(x=dc.index,y=vwap-2*std,line=dict(color="#ef5350",width=1,dash="dash"),name="-2σ"),row=1,col=1)
-
-    # Deviation subplot
-    dev = (dc["Close"] - vwap) / std.replace(0, np.nan)
-    dev_colors = ["#26a69a" if v >= 0 else "#ef5350" for v in dev.fillna(0)]
-    fig.add_trace(go.Bar(x=dc.index,y=dev,marker_color=dev_colors,name="Dev (σ)",opacity=0.8),row=2,col=1)
-    fig.add_hline(y=0,line_color="#ffa726",line_width=1,row=2,col=1)
-    fig.add_hline(y=-1,line_color="#4caf7d",line_dash="dot",line_width=1,row=2,col=1)
-    fig.add_hline(y=-2,line_color="#ef5350",line_dash="dot",line_width=1,row=2,col=1)
-
-    fig.update_layout(height=480,paper_bgcolor="#0a1520",plot_bgcolor="#0d1b2a",font_color="#e0eaf4",
-                      xaxis_rangeslider_visible=False,legend=dict(orientation="h",y=1.02,x=0,font=dict(size=9)),
-                      margin=dict(t=10,b=10))
-    fig.update_xaxes(gridcolor="#1e3040"); fig.update_yaxes(gridcolor="#1e3040")
-    fig.update_yaxes(title_text="Deviation (σ)",row=2,col=1)
-    return fig
-
-# ============================================================
-# COMPOSITE SCORE
-# ============================================================
-WEIGHTS = {"wyckoff": 0.35, "vp": 0.35, "vwap": 0.30}
-
-def analyze_composite(df):
-    w_score, w_crit, w_vd, w_vc, w_prereq, w_dd = analyze_wyckoff(df)
-    v_score, v_crit, v_vd, v_vc, vpd             = analyze_vp(df)
-    vw_score,vw_crit,vw_vd,vw_vc,vwap_data       = analyze_vwap(df)
-
-    composite = int(round(
-        w_score  * WEIGHTS["wyckoff"] +
-        v_score  * WEIGHTS["vp"] +
-        vw_score * WEIGHTS["vwap"]
-    ))
-
-    # Agreement: how many methods >= 60
-    methods_above_60 = sum(1 for s in [w_score,v_score,vw_score] if s >= 60)
-    methods_above_75 = sum(1 for s in [w_score,v_score,vw_score] if s >= 75)
-
-    if composite >= 75 and methods_above_75 >= 2:
-        verdict = "Strong Signal — כל השיטות מסכימות"
-        vcolor  = "#26a69a"
-        signal_class = "signal-strong"
-        action  = "⚡ ALERT — שווה בדיקה מעמיקה"
-    elif composite >= 60 and methods_above_60 >= 2:
-        verdict = "Watch — רוב השיטות מסמנות"
-        vcolor  = "#ffa726"
-        signal_class = "signal-medium"
-        action  = "👁 WATCH — עקוב אחרי הנייר"
-    else:
-        verdict = "אין קונצנזוס — שיטות חלוקות"
-        vcolor  = "#ef5350"
-        signal_class = "signal-weak"
-        action  = "⏳ WAIT — אין מספיק אישורים"
-
-    breakdown = [
-        {"method":"Wyckoff Accumulation","score":w_score,"weight":35,"color":w_vc,
-         "verdict":w_vd,"key":"wyckoff"},
-        {"method":"Volume Profile",       "score":v_score,"weight":35,"color":v_vc,
-         "verdict":v_vd,"key":"vp"},
-        {"method":"VWAP Deviation",       "score":vw_score,"weight":30,"color":vw_vc,
-         "verdict":vw_vd,"key":"vwap"},
-    ]
-    return composite,vcolor,verdict,signal_class,action,breakdown,{
-        "w":(w_score,w_crit,w_vd,w_vc,w_prereq,w_dd),
-        "v":(v_score,v_crit,v_vd,v_vc,vpd),
-        "vw":(vw_score,vw_crit,vw_vd,vw_vc,vwap_data),
-    }
-
-# ============================================================
-# MARKET SCAN
-# ============================================================
-def run_market_scan(analyze_fn, mode, score_threshold=80, max_results=10):
-    hits=[]; errors=[]; total=len(SCAN_UNIVERSE)
-    accent = {"wyckoff":"#4fc3f7","vp":"#ce93d8","vwap":"#4caf7d","composite":"#ffa726"}.get(mode,"#fff")
-
-    st.markdown(f"""
-    <div style="background:#0a1520;border:1px solid #1e3040;border-radius:8px;padding:12px 18px;
-                direction:rtl;color:#b0c8e0;font-size:0.85rem;margin-bottom:16px;">
-    🔍 סורק <b style="color:#fff">{total}</b> מניות | ציון ≥ <b style="color:#ffa726">{score_threshold}</b>
-    | עד <b style="color:{accent}">{max_results}</b> תוצאות
-    </div>""", unsafe_allow_html=True)
-
-    prog=st.progress(0); status=st.empty(); hits_ph=st.empty()
-
-    for i,ticker in enumerate(SCAN_UNIVERSE):
-        if len(hits)>=max_results:
-            status.markdown(f"<div style='direction:rtl;font-family:IBM Plex Mono,monospace;font-size:0.82rem;"
-                            f"color:#26a69a'>✅ נמצאו {max_results} תוצאות — עצרנו לאחר {i}/{total} מניות.</div>",
-                            unsafe_allow_html=True)
-            break
-
-        status.markdown(f"<div style='direction:ltr;font-family:IBM Plex Mono,monospace;font-size:0.78rem;"
-                        f"color:#607d8b'>Scanning {i+1}/{total}: {ticker} | hits: {len(hits)}/{max_results}</div>",
-                        unsafe_allow_html=True)
-        prog.progress((i+1)/total)
-
-        df=get_data(ticker)
-        if df is None: errors.append(ticker); continue
-
-        try:
-            if mode=="wyckoff":
-                sc,cr,vd,vc,pr,dd=analyze_fn(df); score=sc
-            elif mode=="vp":
-                sc,cr,vd,vc,vpd=analyze_fn(df); score=sc; vd=vd; vc=vc
-            elif mode=="vwap":
-                sc,cr,vd,vc,vwd=analyze_fn(df); score=sc
-            else:  # composite
-                sc,vc2,vd,sig,act,brkd,detail=analyze_fn(df); score=sc; vc=vc2
-            if score>=score_threshold:
-                hits.append({"ticker":ticker,"score":score,"verdict":vd,"verdict_color":vc if mode!="composite" else vc2})
-        except Exception:
-            errors.append(ticker); continue
-
-        if hits and i%10==0:
-            top=sorted(hits,key=lambda x:x["score"],reverse=True)
-            rows="".join([f"""<div class="scan-result-row">
-              <span style="color:{accent};font-weight:600;min-width:70px;display:inline-block">{h['ticker']}</span>
-              <span class="scan-badge {'badge-green' if h['score']>=90 else 'badge-yellow'}">{h['score']}/100</span>
-              <span style="color:#607d8b;font-size:0.75rem"> {h['verdict']}</span>
-            </div>""" for h in top])
-            hits_ph.markdown(f"<div style='direction:ltr'><b style='color:#fff;font-family:IBM Plex Mono,monospace'>"
-                             f"Hits ({len(hits)}/{max_results}):</b>{rows}</div>",unsafe_allow_html=True)
-
-    prog.empty(); status.empty(); hits_ph.empty()
-    return sorted(hits,key=lambda x:x["score"],reverse=True),errors
-
-def render_scan_results(hits,errors,mode,score_threshold=80):
-    accent={"wyckoff":"#4fc3f7","vp":"#ce93d8","vwap":"#4caf7d","composite":"#ffa726"}.get(mode,"#fff")
-    card_class={"wyckoff":"","vp":"vp-card","vwap":"vw-card","composite":"comp-card"}.get(mode,"")
-
-    if not hits:
-        st.warning(f"לא נמצאו מניות עם ציון ≥{score_threshold}. נסה להוריד את הסף.")
-        return
-
-    st.markdown(f"""<div style="direction:rtl;margin-bottom:16px;">
-    <b style="color:{accent};font-family:'IBM Plex Mono',monospace;font-size:1rem;">
-    ✅ נמצאו {len(hits)} מניות עם ציון ≥{score_threshold}</b></div>""",unsafe_allow_html=True)
-
-    top8=hits[:8]; cols=st.columns(min(len(top8),4))
-    for idx,h in enumerate(top8):
-        with cols[idx%4]:
-            st.markdown(f"""
-            <div class="overview-card {card_class}">
-              <div class="ticker-label" style="color:{accent}">{h['ticker']}</div>
-              <div class="score-big" style="color:{h['verdict_color']}">{h['score']}</div>
-              <div style="color:#607d8b;font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">/ 100</div>
-              <div class="verdict-label">{h['verdict']}</div>
-              <div class="bar-bg"><div class="bar-fill" style="width:{h['score']}%;background:{h['verdict_color']}"></div></div>
-            </div>""",unsafe_allow_html=True)
-
-    st.markdown("---"); st.markdown("### רשימה מלאה")
-    st.markdown("""<div style="direction:ltr;display:grid;grid-template-columns:60px 80px 1fr 120px;
-                gap:8px;padding:8px 18px;font-family:'IBM Plex Mono',monospace;font-size:0.78rem;
-                color:#607d8b;border-bottom:1px solid #1e3040;">
-                <span>#</span><span>Ticker</span><span>Verdict</span><span>Score</span></div>""",
-                unsafe_allow_html=True)
-    for rank,h in enumerate(hits,1):
-        bc="badge-green" if h["score"]>=90 else "badge-yellow"
-        st.markdown(f"""<div style="direction:ltr;display:grid;grid-template-columns:60px 80px 1fr 120px;
-            gap:8px;padding:10px 18px;font-family:'IBM Plex Mono',monospace;font-size:0.84rem;
-            border-bottom:1px solid #0f1e2e;align-items:center;">
-            <span style="color:#607d8b">{rank}</span>
-            <span style="color:{accent};font-weight:600">{h['ticker']}</span>
-            <span style="color:#b0c8e0;font-size:0.78rem">{h['verdict']}</span>
-            <span class="scan-badge {bc}">{h['score']}/100</span></div>""",unsafe_allow_html=True)
-
-    st.markdown("---"); st.markdown("### פתח ניתוח מפורט")
-    pick=st.selectbox("בחר מניה",[ h["ticker"] for h in hits],key=f"scan_pick_{mode}")
-    if st.button("▶ פתח ניתוח",key=f"scan_detail_{mode}"):
-        df=get_data(pick)
-        if df: _dispatch_detail(pick,df,mode)
-    if errors:
-        with st.expander(f"⚠️ {len(errors)} טיקרים שדולגו"):
-            st.write(", ".join(errors))
-
-def _dispatch_detail(t,df,mode):
-    if mode=="wyckoff":
-        sc,cr,vd,vc,pm,dd=analyze_wyckoff(df); _render_w_detail(t,df,sc,cr,vd,vc,pm,dd)
-    elif mode=="vp":
-        sc,cr,vd,vc,vpd=analyze_vp(df); _render_vp_detail(t,df,sc,cr,vd,vc,vpd)
-    elif mode=="vwap":
-        sc,cr,vd,vc,vwd=analyze_vwap(df); _render_vw_detail(t,df,sc,cr,vd,vc,vwd)
-    else:
-        sc,vc2,vd,sig,act,brkd,detail=analyze_composite(df)
-        _render_composite_detail(t,df,sc,vc2,vd,sig,act,brkd,detail)
-
-# ============================================================
-# DETAIL RENDERERS
-# ============================================================
-def _render_criteria(criteria,box_pos,box_neg):
-    for c in criteria:
-        box=box_pos if c["hit"] else box_neg
-        lbl="✅ הצליח" if c["hit"] else "❌ נכשל"
-        cls="hit" if c["hit"] else "miss"
-        st.markdown(f"""
-        <div class="score-reason-box {box}">
-          <div class="criteria-row">
-            <strong>{c['name']}</strong>
-            <span><span class="{cls}">{lbl}</span> &nbsp;|&nbsp; <strong>{c['earned']}/{c['points']} נק'</strong></span>
-          </div>
-          <div style="margin-top:6px;color:#b0c8e0">{c['explanation']}</div>
-        </div>""",unsafe_allow_html=True)
-
-def _render_w_detail(t,df,score,criteria,verdict,vcolor,prereq,dd):
-    cg,cr=st.columns([1,1],gap="large")
-    with cg:
-        st.plotly_chart(render_gauge(score,verdict,vcolor,"wyckoff"),use_container_width=True)
-        if not prereq:
-            st.markdown(f"""<div class="score-reason-box negative">
-            ⚠️ <strong>תנאי מקדים לא מתקיים:</strong> ירידה {dd*100:.1f}% (נדרש ≥12%).</div>""",unsafe_allow_html=True)
-    with cr:
-        st.markdown("#### פירוט הניקוד")
-        _render_criteria(criteria,"positive","negative")
-    st.markdown(f"##### גרף — {t}")
-    st.plotly_chart(render_wyckoff_chart(df),use_container_width=True)
-
-def _render_vp_detail(t,df,score,criteria,verdict,vcolor,vpd):
-    cur=df["Close"].iloc[-1]
-    st.markdown(f"""<div style="direction:ltr;font-family:'IBM Plex Mono',monospace;font-size:0.82rem;
-        color:#b0b0c0;background:#0d1220;border-radius:6px;padding:8px 14px;margin-bottom:12px;">
-      Current: <b style="color:#fff">{cur:.2f}</b> &nbsp;|&nbsp;
-      POC: <b style="color:#ce93d8">{vpd['poc']:.2f}</b> &nbsp;|&nbsp;
-      VAH: <b style="color:#4fc3f7">{vpd['vah']:.2f}</b> &nbsp;|&nbsp;
-      VAL: <b style="color:#4fc3f7">{vpd['val']:.2f}</b></div>""",unsafe_allow_html=True)
-    cg,cr=st.columns([1,1],gap="large")
-    with cg: st.plotly_chart(render_gauge(score,verdict,vcolor,"vp"),use_container_width=True)
-    with cr:
-        st.markdown("#### פירוט הניקוד")
-        _render_criteria(criteria,"vp-positive","vp-negative")
-    st.markdown(f"##### Volume Profile — {t}")
-    st.plotly_chart(render_vp_chart(df,vpd,t),use_container_width=True)
-
-def _render_vw_detail(t,df,score,criteria,verdict,vcolor,vwap_data):
-    cur=df["Close"].iloc[-1]; cvwap=vwap_data["cur_vwap"]; cstd=vwap_data["cur_std"]
-    st.markdown(f"""<div style="direction:ltr;font-family:'IBM Plex Mono',monospace;font-size:0.82rem;
-        color:#b0b0c0;background:#0a150e;border-radius:6px;padding:8px 14px;margin-bottom:12px;">
-      Current: <b style="color:#fff">{cur:.2f}</b> &nbsp;|&nbsp;
-      VWAP: <b style="color:#ffa726">{cvwap:.2f}</b> &nbsp;|&nbsp;
-      σ: <b style="color:#4caf7d">{cstd:.3f}</b> &nbsp;|&nbsp;
-      Dev: <b style="color:#{'ef5350' if cur<cvwap else '26a69a'}">{(cur-cvwap)/cstd:.2f}σ</b></div>""",
-        unsafe_allow_html=True)
-    cg,cr=st.columns([1,1],gap="large")
-    with cg: st.plotly_chart(render_gauge(score,verdict,vcolor,"vwap"),use_container_width=True)
-    with cr:
-        st.markdown("#### פירוט הניקוד")
-        _render_criteria(criteria,"vw-positive","vw-negative")
-    st.markdown(f"##### VWAP + Deviation Bands — {t}")
-    st.plotly_chart(render_vwap_chart(df,vwap_data,t),use_container_width=True)
-
-def _render_composite_detail(t,df,composite,vcolor,verdict,signal_class,action,breakdown,detail):
-    # Signal banner
-    st.markdown(f"""
-    <div class="signal-box {signal_class}">
-      <div class="signal-title">{action}</div>
-      <div class="signal-sub">{verdict}</div>
-    </div>""",unsafe_allow_html=True)
-
-    cg,cb=st.columns([1,1],gap="large")
-    with cg:
-        st.plotly_chart(render_gauge(composite,verdict,vcolor,"composite"),use_container_width=True)
-    with cb:
-        st.markdown("#### Breakdown — שלושת השיטות")
-        st.markdown('<div class="comp-breakdown">',unsafe_allow_html=True)
-        for b in breakdown:
-            st.markdown(f"""
-            <div class="comp-row">
-              <span class="comp-label">{b['method']}<br>
-                <span style="font-size:0.68rem;color:#607d8b">משקל {b['weight']}%</span>
-              </span>
-              <div class="comp-bar-bg">
-                <div class="comp-bar-fill" style="width:{b['score']}%;background:{b['color']}"></div>
-              </div>
-              <span class="comp-score" style="color:{b['color']}">{b['score']}</span>
-            </div>
-            <div style="font-size:0.72rem;color:#607d8b;margin-bottom:8px;direction:rtl">{b['verdict']}</div>
-            """,unsafe_allow_html=True)
-        st.markdown('</div>',unsafe_allow_html=True)
-
-    # Per-method drill-down in expanders
-    st.markdown("---")
-    w_data,v_data,vw_data = detail["w"],detail["v"],detail["vw"]
-    with st.expander("🔍 פרוט Wyckoff"):
-        _render_w_detail(t,df,w_data[0],w_data[1],w_data[2],w_data[3],w_data[4],w_data[5])
-    with st.expander("🔍 פרוט Volume Profile"):
-        _render_vp_detail(t,df,v_data[0],v_data[1],v_data[2],v_data[3],v_data[4])
-    with st.expander("🔍 פרוט VWAP Deviation"):
-        _render_vw_detail(t,df,vw_data[0],vw_data[1],vw_data[2],vw_data[3],vw_data[4])
-
-# ============================================================
-# GENERIC SCREEN BUILDER
-# ============================================================
-def _scan_controls(mode, scan_key_prefix):
-    st.markdown("#### ⚙️ פרמטרי סריקה")
-    fc1,fc2=st.columns(2)
-    with fc1:
-        min_s=st.slider("ציון מינימום",min_value=60,max_value=95,value=80,step=5,
-                         key=f"{scan_key_prefix}_min")
-    with fc2:
-        max_r=st.slider("מקסימום תוצאות",min_value=3,max_value=30,value=10,step=1,
-                         key=f"{scan_key_prefix}_max")
-    zone = ("🟢 Accumulation Zone חזק" if min_s>=85 else
-            "🟡 Accumulation Zone סביר" if min_s>=75 else
-            "🟠 רף נמוך — יותר תוצאות, פחות אמינות")
-    accent={"wyckoff":"#4fc3f7","vp":"#ce93d8","vwap":"#4caf7d","composite":"#ffa726"}.get(mode,"#fff")
-    st.markdown(f"<div style='direction:rtl;font-size:0.82rem;color:#b0c8e0;margin-bottom:12px'>"
-                f"{zone} | ≥<b style='color:#ffa726'>{min_s}</b> | עד <b style='color:{accent}'>{max_r}</b></div>",
-                unsafe_allow_html=True)
-    return min_s,max_r
-
-def _ticker_input(key_prefix):
-    ci,cb=st.columns([4,1])
-    with ci:
-        raw=st.text_input("טיקרים (פסיק או רווח)","NVDA, MSFT, AMZN",key=f"{key_prefix}_input")
-    with cb:
-        st.markdown("<div style='margin-top:28px'></div>",unsafe_allow_html=True)
-        run=st.button("▶ הרץ",use_container_width=True,key=f"{key_prefix}_run")
-    return raw,run
-
-def _run_specific(raw, mode, analyze_fn, render_fn, sub_state_key):
-    tickers=list(dict.fromkeys([t.strip().upper() for t in raw.replace(","," ").split() if t.strip()]))
-    if not tickers: st.error("יש להזין לפחות טיקר אחד."); return
-
-    results={}; prog=st.progress(0,text="שולף דאטה...")
-    for i,t in enumerate(tickers):
-        prog.progress((i+1)/len(tickers),text=f"מנתח {t}...")
-        df=get_data(t)
-        results[t]=None if df is None else (df,analyze_fn(df))
-    prog.empty()
-
-    valid={t:v for t,v in results.items() if v}
-    failed=[t for t in results if not results[t]]
-    if failed: st.warning(f"לא נמצא דאטה עבור: {', '.join(failed)}")
-    if not valid: st.error("לא נמצא דאטה תקין."); return
-
-    # Overview for multi
-    if len(valid)>1:
-        st.markdown("---"); st.markdown("### סקירה כללית")
-        # build a dict of score/verdict_color for comparison chart
-        overview={}
-        for t,(df,res) in valid.items():
-            if mode=="composite":
-                sc,vc,vd,sig,act,brkd,detail=res
-                overview[t]={"score":sc,"verdict_color":vc,"verdict":vd}
-            elif mode=="wyckoff":
-                sc,cr,vd,vc,pm,dd=res; overview[t]={"score":sc,"verdict_color":vc,"verdict":vd}
-            elif mode=="vp":
-                sc,cr,vd,vc,vpd=res; overview[t]={"score":sc,"verdict_color":vc,"verdict":vd}
-            else:
-                sc,cr,vd,vc,vwd=res; overview[t]={"score":sc,"verdict_color":vc,"verdict":vd}
-
-        card_class={"wyckoff":"","vp":"vp-card","vwap":"vw-card","composite":"comp-card"}.get(mode,"")
-        accent={"wyckoff":"#4fc3f7","vp":"#ce93d8","vwap":"#4caf7d","composite":"#ffa726"}.get(mode,"#fff")
-        sorted_t=sorted(overview.keys(),key=lambda t: overview[t]["score"],reverse=True)
-        cols=st.columns(len(sorted_t))
-        for col,t in zip(cols,sorted_t):
-            ov=overview[t]
-            with col:
-                st.markdown(f"""
-                <div class="overview-card {card_class}">
-                  <div class="ticker-label" style="color:{accent}">{t}</div>
-                  <div class="score-big" style="color:{ov['verdict_color']}">{ov['score']}</div>
-                  <div style="color:#607d8b;font-size:0.72rem;font-family:'IBM Plex Mono',monospace;">/ 100</div>
-                  <div class="verdict-label">{ov['verdict']}</div>
-                  <div class="bar-bg"><div class="bar-fill" style="width:{ov['score']}%;background:{ov['verdict_color']}"></div></div>
-                </div>""",unsafe_allow_html=True)
-        fig_c,_=render_comparison_chart(overview,mode); st.plotly_chart(fig_c,use_container_width=True)
-
-    # Tabs
-    st.markdown("---"); st.markdown("### ניתוח פרטני")
-    emoji_fn = lambda s,m: ("🟢" if s>=75 else "🟡" if s>=45 else "🔴") if m!="composite" else ("🏆" if s>=75 else "🎯" if s>=45 else "⚪")
-
-    def get_score(t):
-        res=valid[t][1]
-        return res[0]
-
-    tabs=st.tabs([f"{emoji_fn(get_score(t),mode)} {t}" for t in valid])
-    for tab,t in zip(tabs,valid):
-        with tab:
-            df,res=valid[t]; render_fn(t,df,res)
-
-# ============================================================
-# PER-MODE RENDER WRAPPERS
-# ============================================================
-def _wrap_w(t,df,res):    _render_w_detail(t,df,*res)
-def _wrap_vp(t,df,res):   _render_vp_detail(t,df,res[0],res[1],res[2],res[3],res[4])
-def _wrap_vw(t,df,res):   _render_vw_detail(t,df,res[0],res[1],res[2],res[3],res[4])
-def _wrap_comp(t,df,res): _render_composite_detail(t,df,res[0],res[1],res[2],res[3],res[4],res[5],res[6])
-
-# ============================================================
-# SCREENS
-# ============================================================
-def screen_wyckoff():
-    st.markdown("""
-    <div class="header-box wyckoff">
-      <h2>⬛ WYCKOFF ACCUMULATION SCOUT</h2>
-      <p>מחפש חתימות של <strong>איסוף מוסדי מוקדם</strong> לפי מתודולוגיית ריצ'רד וייקוף.
-      מוסדיים בונים פוזיציות בשקט כשהציבור פוחד — הבוט מזהה את חמש החתימות הקלאסיות.</p>
-      <p>
-        <span class="tag tag-w">SC – Selling Climax · 25 נק'</span>
-        <span class="tag tag-w">AR – Automatic Rally · 20 נק'</span>
-        <span class="tag tag-w">No Supply · 20 נק'</span>
-        <span class="tag tag-w">Price–Vol Divergence · 20 נק'</span>
-        <span class="tag tag-w">Trading Range · 15 נק'</span>
-      </p>
-      <p>
-        <strong>SC:</strong> ווליום ≥2× ממוצע + זנב תחתון — פאניקה שנבלמת ע"י קונים גדולים.<br>
-        <strong>AR:</strong> עלייה ≥4% תוך 10 ימים — אישור ראשון להסרת היצע.<br>
-        <strong>No Supply:</strong> ווליום &lt;70% מהממוצע — המוכרים נעלמו.<br>
-        <strong>Divergence:</strong> מחיר יורד אבל ווליום קורס — לחץ מתייבש.<br>
-        <strong>Trading Range:</strong> טווח &lt;12% ב-15 ימים — צבירה שקטה.
-      </p>
-      <p style="color:#607d8b;font-size:0.82rem;">⚠️ תנאי מקדים: ירידה ≥12% מהשיא.</p>
-    </div>""",unsafe_allow_html=True)
-
-    c1,c2=st.columns(2)
-    with c1:
-        if st.button("🎯 מניות ספציפיות",use_container_width=True,
-                     type="primary" if st.session_state.w_sub=="specific" else "secondary",key="w_sub_spec"):
-            st.session_state.w_sub="specific"; st.rerun()
-    with c2:
-        if st.button("🌐 סריקת שוק",use_container_width=True,
-                     type="primary" if st.session_state.w_sub=="scan" else "secondary",key="w_sub_scan"):
-            st.session_state.w_sub="scan"; st.rerun()
-    st.markdown("")
-
-    if st.session_state.w_sub=="specific":
-        raw,run=_ticker_input("w")
-        if run: _run_specific(raw,"wyckoff",analyze_wyckoff,_wrap_w,"w_sub")
-    else:
-        st.markdown("""<div style="background:#0f1a10;border:1px solid #2a4a2a;border-radius:8px;
-            padding:14px 20px;direction:rtl;color:#b0d8b0;font-size:0.88rem;margin-bottom:16px;">
-            הסריקה עוברת על ~200 מניות מ-S&P 500, Nasdaq ומגזרים שונים.</div>""",unsafe_allow_html=True)
-        min_s,max_r=_scan_controls("wyckoff","w_sc")
-        if st.button("🚀 התחל סריקת שוק — Wyckoff",use_container_width=True,key="w_scan_go"):
-            hits,errors=run_market_scan(analyze_wyckoff,"wyckoff",min_s,max_r)
-            render_scan_results(hits,errors,"wyckoff",min_s)
-
-    st.markdown("""<div class="disclaimer">⚠️ אנליזה טכנית בלבד, אינה המלצת השקעה.</div>""",unsafe_allow_html=True)
-
 
 def screen_vp():
     st.markdown("""
@@ -944,113 +439,222 @@ def screen_vp():
 
     st.markdown("""<div class="disclaimer">⚠️ אנליזה טכנית בלבד, אינה המלצת השקעה.</div>""",unsafe_allow_html=True)
 
+# ============================================================
+# VWAP DEVIATION METHOD
+# ============================================================
+def compute_vwap(df):
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    cum_tpv = (tp * df["Volume"]).cumsum()
+    cum_vol = df["Volume"].cumsum()
+    vwap = cum_tpv / cum_vol
+    dev = df["Close"] - vwap
+    rolling_std = dev.rolling(20).std()
+    return vwap, dev, rolling_std
+
+def analyze_vwap(df):
+    score=0; criteria=[]
+    vwap, dev, rolling_std = compute_vwap(df)
+    cur = df["Close"].iloc[-1]; cur_vwap = vwap.iloc[-1]; cur_dev = dev.iloc[-1]; cur_std = rolling_std.iloc[-1]
+
+    below_1std = cur_dev <= -1.0 * cur_std
+    below_2std = cur_dev <= -2.0 * cur_std
+    pts_below = 25 if below_2std else 15 if below_1std else 0
+    score += pts_below; std_ratio = abs(cur_dev) / cur_std if cur_std > 0 else 0
+    criteria.append({"name":"סטיית מחיר מה-VWAP","hit":pts_below>0,"points":25,"earned":pts_below,
+        "explanation":(f"מחיר ({cur:.2f}) נמצא {std_ratio:.1f}σ מתחת ל-VWAP ({cur_vwap:.2f}). "+("דיסקאונט של 2σ+ — סטייה קיצונית, הסתברות גבוהה לחזרה." if below_2std else "דיסקאונט של 1σ — מחיר נמוך ביחס לממוצע המשוקלל." if below_1std else "מחיר קרוב ל-VWAP או מעליו — אין דיסקאונט."))})
+
+    vwap_20 = vwap.iloc[-20:]
+    slope_early = (vwap_20.iloc[10] - vwap_20.iloc[0]) / vwap_20.iloc[0]; slope_late = (vwap_20.iloc[-1] - vwap_20.iloc[-10]) / vwap_20.iloc[-10]
+    flattening = (slope_early < -0.005) and (slope_late > slope_early * 0.5)
+    flat_pts = 20 if flattening else 0; score += flat_pts
+    criteria.append({"name":"VWAP Slope מתיישב","hit":flattening,"points":20,"earned":flat_pts,"explanation":(f"שיפוע מוקדם: {slope_early*100:+.2f}% | שיפוע מאוחר: {slope_late*100:+.2f}%. "+("ה-VWAP מתיישב — המומנטום השלילי נחלש, מוסדיים מתחילים לספוג." if flattening else "ה-VWAP עדיין במגמה שלילית ברורה — המומנטום לא השתנה."))})
+
+    last_10 = df.iloc[-10:]; price_moving_up = last_10["Close"].iloc[-1] > last_10["Close"].iloc[0]; vol_expanding = last_10["Volume"].iloc[-5:].mean() > last_10["Volume"].iloc[:5].mean() * 1.2
+    approach_pts = 20 if (price_moving_up and vol_expanding) else 0; score += approach_pts; v_ratio = last_10["Volume"].iloc[-5:].mean() / last_10["Volume"].iloc[:5].mean()
+    criteria.append({"name":"נפח עולה עם התקרבות ל-VWAP","hit":approach_pts>0,"points":20,"earned":approach_pts,"explanation":(f"מחיר {'עולה' if price_moving_up else 'יורד'} | ווליום: {v_ratio:.2f}x הממוצע הקודם. "+("מחיר מתקרב ל-VWAP עם נפח גובר — מוסדיים נכנסים." if approach_pts>0 else "לא נראית ספיגה פעילה עם נפח ביחס ל-VWAP."))})
+
+    low_idx = df["Low"].iloc[-65:].idxmin(); post_low = df.loc[low_idx:]
+    if len(post_low) >= 5:
+        tp_post = (post_low["High"]+post_low["Low"]+post_low["Close"])/3; avwap = (tp_post * post_low["Volume"]).cumsum() / post_low["Volume"].cumsum()
+        above_avwap = cur > avwap.iloc[-1]; avwap_val = avwap.iloc[-1]
+    else:
+        above_avwap = False; avwap_val = cur
+    avwap_pts = 20 if above_avwap else 0; score += avwap_pts; low_date = low_idx.strftime('%d/%m/%Y') if hasattr(low_idx,'strftime') else str(low_idx)[:10]
+    criteria.append({"name":"מעל Anchored VWAP מהשפל","hit":above_avwap,"points":20,"earned":avwap_pts,"explanation":(f"Anchored VWAP מהשפל ({low_date}): {avwap_val:.2f}. "+(f"מחיר ({cur:.2f}) נסחר מעל — מבנה עולה מהשפל, סימן בריאות מבנית." if above_avwap else f"מחיר ({cur:.2f}) עדיין מתחת ל-AVWAP — לא בוצעה החלמה מהשפל."))})
+
+    std_early = rolling_std.iloc[-20:-10].mean(); std_late = rolling_std.iloc[-10:].mean(); contracting = (std_late < std_early * 0.85) if (std_early > 0) else False
+    cont_pts = 15 if contracting else 0; score += cont_pts
+    criteria.append({"name":"סטיית תקן מתכווצת","hit":contracting,"points":15,"earned":cont_pts,"explanation":(f"σ מוקדם: {std_early:.3f} | σ מאוחר: {std_late:.3f}. "+("הסטיה מתכווצת — תנודתיות יורדת, המחיר מתייצב סביב VWAP." if contracting else "הסטיה לא מתכווצת — המחיר עדיין תנודתי."))})
+
+    vd = "מיקום VWAP אופטימלי לכניסה" if score>=75 else "סטייה חלקית" if score>=45 else "אין הזדמנות VWAP"
+    vc = "#4caf7d" if score>=75 else "#ffa726" if score>=45 else "#ef5350"
+    vwap_data = {"vwap":vwap,"dev":dev,"rolling_std":rolling_std,"cur_vwap":cur_vwap,"cur_std":cur_std}
+    return score,criteria,vd,vc,vwap_data
+
+def render_vwap_chart(df, vwap_data, ticker):
+    dc = df.iloc[-65:].copy(); vwap = vwap_data["vwap"].reindex(dc.index); std = vwap_data["rolling_std"].reindex(dc.index)
+    fig = make_subplots(rows=2,cols=1,shared_xaxes=True,row_heights=[0.65,0.35],vertical_spacing=0.04)
+    fig.add_trace(go.Candlestick(x=dc.index,open=dc["Open"],high=dc["High"],low=dc["Low"],close=dc["Close"],increasing_line_color="#26a69a",decreasing_line_color="#ef5350",name="Price"),row=1,col=1)
+    fig.add_trace(go.Scatter(x=dc.index,y=vwap,line=dict(color="#ffa726",width=2),name="VWAP"),row=1,col=1)
+    fig.add_trace(go.Scatter(x=dc.index,y=vwap+std,line=dict(color="#4caf7d",width=1,dash="dot"),name="+1σ"),row=1,col=1)
+    fig.add_trace(go.Scatter(x=dc.index,y=vwap-std,line=dict(color="#4caf7d",width=1,dash="dot"),fill='tonexty',fillcolor='rgba(76,175,61,0.05)',name="-1σ"),row=1,col=1)
+    fig.add_trace(go.Scatter(x=dc.index,y=vwap+2*std,line=dict(color="#ef5350",width=1,dash="dash"),name="+2σ"),row=1,col=1)
+    fig.add_trace(go.Scatter(x=dc.index,y=vwap-2*std,line=dict(color="#ef5350",width=1,dash="dash"),name="-2σ"),row=1,col=1)
+    dev = (dc["Close"] - vwap) / std.replace(0, np.nan); dev_colors = ["#26a69a" if v >= 0 else "#ef5350" for v in dev.fillna(0)]
+    fig.add_trace(go.Bar(x=dc.index,y=dev,marker_color=dev_colors,name="Dev (σ)",opacity=0.8),row=2,col=1)
+    fig.add_hline(y=0,line_color="#ffa726",line_width=1,row=2,col=1); fig.add_hline(y=-1,line_color="#4caf7d",line_dash="dot",line_width=1,row=2,col=1); fig.add_hline(y=-2,line_color="#ef5350",line_dash="dot",line_width=1,row=2,col=1)
+    fig.update_layout(height=480,paper_bgcolor="#0a1520",plot_bgcolor="#0d1b2a",font_color="#e0eaf4",xaxis_rangeslider_visible=False,legend=dict(orientation="h",y=1.02,x=0,font=dict(size=9)),margin=dict(t=10,b=10))
+    fig.update_xaxes(gridcolor="#1e3040"); fig.update_yaxes(gridcolor="#1e3040")
+    return fig
 
 def screen_vwap():
-    st.markdown("""
-    <div class="header-box vwap">
-      <h2>📐 VWAP DEVIATION SCOUT</h2>
-      <p>מנתח <strong>סטיית תקן מה-VWAP</strong> — Volume Weighted Average Price השנתי.
-      ה-VWAP הוא "המחיר ההוגן" שבו השוק באמת סחר בממוצע. סטייה שלילית גדולה = הנייר זול ביחס למה שכולם שילמו.</p>
-      <p><strong>חמשת הקריטריונים:</strong></p>
-      <p>
-        <span class="tag tag-vw">סטיית מחיר מה-VWAP · 25 נק'</span>
-        <span class="tag tag-vw">VWAP Slope מתיישב · 20 נק'</span>
-        <span class="tag tag-vw">נפח עולה עם התקרבות · 20 נק'</span>
-        <span class="tag tag-vw">מעל Anchored VWAP מהשפל · 20 נק'</span>
-        <span class="tag tag-vw">סטיית תקן מתכווצת · 15 נק'</span>
-      </p>
-      <p>
-        <strong>סטייה מה-VWAP:</strong> מחיר מתחת ל-VWAP ב-1σ=15 נק', ב-2σ+=25 נק' — ככל שהסטייה גדולה יותר, הדיסקאונט חמור יותר.<br>
-        <strong>Slope מתיישב:</strong> ה-VWAP עצמו מפסיק לרדת — סימן שהמגמה השלילית נחלשת.<br>
-        <strong>נפח עולה:</strong> כשהמחיר מתחיל לחזור ל-VWAP עם נפח גובר — מוסדיים נכנסים.<br>
-        <strong>Anchored VWAP:</strong> VWAP מעוגן לשפל האחרון — האם התאוששות אמיתית התחילה.<br>
-        <strong>σ מתכווצת:</strong> התנודתיות יורדת — המחיר מתייצב, טרום התהפכות.
-      </p>
-      <p style="color:#607d8b;font-size:0.82rem;">
-        ✦ הגרף: VWAP + רצועות ±1σ ±2σ. הסאבפלוט התחתון מציג את הסטייה הנוכחית בסיגמות.
-      </p>
-    </div>""",unsafe_allow_html=True)
-
-    c1,c2=st.columns(2)
+    st.markdown("""<div class="header-box vwap"><h2>📐 VWAP DEVIATION SCOUT</h2><p>מנתח סטיית תקן מהשנתי.</p></div>""",unsafe_allow_html=True)
+    c1,c2 = st.columns(2)
     with c1:
-        if st.button("🎯 מניות ספציפיות",use_container_width=True,
-                     type="primary" if st.session_state.vw_sub=="specific" else "secondary",key="vw_sub_spec"):
-            st.session_state.vw_sub="specific"; st.rerun()
+        if st.button("🎯 מניות ספציפיות",key="vw_spec"): st.session_state.vw_sub="specific"; st.rerun()
     with c2:
-        if st.button("🌐 סריקת שוק",use_container_width=True,
-                     type="primary" if st.session_state.vw_sub=="scan" else "secondary",key="vw_sub_scan"):
-            st.session_state.vw_sub="scan"; st.rerun()
-    st.markdown("")
-
+        if st.button("🌐 סריקת שוק",key="vw_scan"): st.session_state.vw_sub="scan"; st.rerun()
     if st.session_state.vw_sub=="specific":
         raw,run=_ticker_input("vw")
         if run: _run_specific(raw,"vwap",analyze_vwap,_wrap_vw,"vw_sub")
     else:
-        st.markdown("""<div style="background:#0f2318;border:1px solid #2a6a4a;border-radius:8px;
-            padding:14px 20px;direction:rtl;color:#b0d8c0;font-size:0.88rem;margin-bottom:16px;">
-            VWAP מחושב על בסיס שנה שלמה של דאטה. הסריקה מהירה יחסית.</div>""",unsafe_allow_html=True)
         min_s,max_r=_scan_controls("vwap","vw_sc")
-        if st.button("🚀 התחל סריקת שוק — VWAP Deviation",use_container_width=True,key="vw_scan_go"):
-            hits,errors=run_market_scan(analyze_vwap,"vwap",min_s,max_r)
-            render_scan_results(hits,errors,"vwap",min_s)
+        if st.button("🚀 התחל סריקת שוק — VWAP Deviation"):
+            hits,errors=run_market_scan(analyze_vwap,"vwap",min_s,max_r); render_scan_results(hits,errors,"vwap",min_s)
 
-    st.markdown("""<div class="disclaimer">⚠️ אנליזה טכנית בלבד, אינה המלצת השקעה.</div>""",unsafe_allow_html=True)
+# ============================================================
+# COMPOSITE SCORE
+# ============================================================
+WEIGHTS = {"wyckoff": 0.35, "vp": 0.35, "vwap": 0.30}
 
+def analyze_composite(df):
+    w_score, w_crit, w_vd, w_vc, w_prereq, w_dd = analyze_wyckoff(df)
+    v_score, v_crit, v_vd, v_vc, vpd = analyze_vp(df)
+    vw_score,vw_crit,vw_vd,vw_vc,vwap_data = analyze_vwap(df)
+    composite = int(round(w_score * WEIGHTS["wyckoff"] + v_score * WEIGHTS["vp"] + vw_score * WEIGHTS["vwap"]))
+    methods_above_60 = sum(1 for s in [w_score,v_score,vw_score] if s >= 60); methods_above_75 = sum(1 for s in [w_score,v_score,vw_score] if s >= 75)
+    if composite >= 75 and methods_above_75 >= 2:
+        verdict = "Strong Signal"; vcolor = "#26a69a"; signal_class = "signal-strong"; action = "⚡ ALERT — שווה בדיקה"
+    elif composite >= 60 and methods_above_60 >= 2:
+        verdict = "Watch"; vcolor = "#ffa726"; signal_class = "signal-medium"; action = "👁 WATCH — עקוב"
+    else:
+        verdict = "אין קונצנזוס"; vcolor = "#ef5350"; signal_class = "signal-weak"; action = "⏳ WAIT"
+    breakdown = [{"method":"Wyckoff Accumulation","score":w_score,"weight":35,"color":w_vc,"verdict":w_vd,"key":"wyckoff"},{"method":"Volume Profile","score":v_score,"weight":35,"color":v_vc,"verdict":v_vd,"key":"vp"},{"method":"VWAP Deviation","score":vw_score,"weight":30,"color":vw_vc,"verdict":vw_vd,"key":"vwap"}]
+    return composite,vcolor,verdict,signal_class,action,breakdown,{"w":(w_score,w_crit,w_vd,w_vc,w_prereq,w_dd),"v":(v_score,v_crit,v_vd,v_vc,vpd),"vw":(vw_score,vw_crit,vw_vd,vw_vc,vwap_data)}
 
 def screen_composite():
-    st.markdown("""
-    <div class="header-box composite">
-      <h2>🏆 COMPOSITE SCORE — ניתוח משולב</h2>
-      <p>המסך הרביעי מתכלל את שלושת השיטות לציון מורכב אחד — <strong>Composite Institutional Score</strong>.
-      במקום להסתמך על שיטה בודדת, הבוט מחשב ממוצע משוקלל ובודק האם יש <em>קונצנזוס</em> בין השיטות.</p>
-      <p><strong>משקלות:</strong>
-        <span class="tag tag-c">Wyckoff 35%</span>
-        <span class="tag tag-c">Volume Profile 35%</span>
-        <span class="tag tag-c">VWAP Deviation 30%</span>
-      </p>
-      <p>
-        <strong>למה משקלות שונים?</strong><br>
-        Wyckoff ו-VP קיבלו 35% כל אחד — הם בודקים תהליך ומחיר, הכי אמינים לזיהוי איסוף.
-        VWAP קיבל 30% — חשוב לתזמון אבל רגיש יותר לתנודות קצרות טווח.
-      </p>
-      <p><strong>סף ה-Signal:</strong></p>
-      <p>
-        <span class="tag tag-c">⚡ Strong Signal: ≥75 + שתי שיטות ≥75</span>
-        <span class="tag tag-c">👁 Watch: ≥60 + שתי שיטות ≥60</span>
-        <span class="tag tag-c">⏳ Wait: פחות מזה</span>
-      </p>
-      <p>הסריקה מחזירה רק מניות שעברו את הסף המורכב — הכי מסונן מכל ארבעת המסכים.</p>
-    </div>""",unsafe_allow_html=True)
-
-    c1,c2=st.columns(2)
+    st.markdown("""<div class="header-box composite"><h2>🏆 COMPOSITE SCORE</h2></div>""",unsafe_allow_html=True)
+    c1,c2 = st.columns(2)
     with c1:
-        if st.button("🎯 מניות ספציפיות",use_container_width=True,
-                     type="primary" if st.session_state.comp_sub=="specific" else "secondary",key="comp_sub_spec"):
-            st.session_state.comp_sub="specific"; st.rerun()
+        if st.button("🎯 מניות ספציפיות",key="comp_spec"): st.session_state.comp_sub="specific"; st.rerun()
     with c2:
-        if st.button("🌐 סריקת שוק",use_container_width=True,
-                     type="primary" if st.session_state.comp_sub=="scan" else "secondary",key="comp_sub_scan"):
-            st.session_state.comp_sub="scan"; st.rerun()
-    st.markdown("")
-
+        if st.button("🌐 סריקת שוק",key="comp_scan"): st.session_state.comp_sub="scan"; st.rerun()
     if st.session_state.comp_sub=="specific":
         raw,run=_ticker_input("comp")
         if run: _run_specific(raw,"composite",analyze_composite,_wrap_comp,"comp_sub")
     else:
-        st.markdown("""<div style="background:#1a1208;border:1px solid #6a4a1a;border-radius:8px;
-            padding:14px 20px;direction:rtl;color:#d8c0a0;font-size:0.88rem;margin-bottom:16px;">
-            הסריקה המשולבת היא הכבדה ביותר — מריצה את שלושת האלגוריתמים על כל מניה.
-            הגדר את הסף גבוה (≥75) לקבלת האיתותים האיכותיים ביותר בלבד.</div>""",unsafe_allow_html=True)
         min_s,max_r=_scan_controls("composite","comp_sc")
-        if st.button("🚀 התחל סריקת שוק — Composite",use_container_width=True,key="comp_scan_go"):
-            hits,errors=run_market_scan(analyze_composite,"composite",min_s,max_r)
-            render_scan_results(hits,errors,"composite",min_s)
-
-    st.markdown("""<div class="disclaimer">⚠️ אנליזה טכנית בלבד, אינה המלצת השקעה. תמיד בצע Due Diligence עצמאי.</div>""",
-                unsafe_allow_html=True)
+        if st.button("🚀 התחל סריקת שוק — Composite"):
+            hits,errors=run_market_scan(analyze_composite,"composite",min_s,max_r); render_scan_results(hits,errors,"composite",min_s)
 
 # ============================================================
-# ROUTER
+# MARKET SCAN ENGINE
 # ============================================================
-routes = {"wyckoff":screen_wyckoff,"vp":screen_vp,"vwap":screen_vwap,"composite":screen_composite}
+def run_market_scan(analyze_fn, mode, score_threshold=80, max_results=10):
+    hits=[]; errors=[]; total=len(SCAN_UNIVERSE); accent = {"wyckoff":"#4fc3f7","vp":"#ce93d8","vwap":"#4caf7d","composite":"#ffa726"}.get(mode,"#fff")
+    st.markdown(f"""<div style="background:#0a1520;border:1px solid #1e3040;border-radius:8px;padding:12px 18px;direction:rtl;color:#b0c8e0;font-size:0.85rem;margin-bottom:16px;">🔍 סורק <b style="color:#fff">{total}</b> מניות | ציון ≥ <b style="color:#ffa726">{score_threshold}</b></div>""", unsafe_allow_html=True)
+    prog=st.progress(0); status=st.empty(); hits_ph=st.empty()
+    for i,ticker in enumerate(SCAN_UNIVERSE):
+        if len(hits)>=max_results: break
+        prog.progress((i+1)/total); df=get_data(ticker)
+        if df is None: errors.append(ticker); continue
+        try:
+            res=analyze_fn(df); score=res[0]
+            if score>=score_threshold: hits.append({"ticker":ticker,"score":score,"verdict":res[2],"verdict_color":res[3] if mode!="composite" else res[1]})
+        except Exception: errors.append(ticker); continue
+    prog.empty(); return sorted(hits,key=lambda x:x["score"],reverse=True),errors
+
+def render_scan_results(hits,errors,mode,score_threshold=80):
+    accent={"wyckoff":"#4fc3f7","vp":"#ce93d8","vwap":"#4caf7d","composite":"#ffa726"}.get(mode,"#fff"); card_class={"wyckoff":"","vp":"vp-card","vwap":"vw-card","composite":"comp-card"}.get(mode,"")
+    if not hits: st.warning("לא נמצאו תוצאות"); return
+    top8=hits[:8]; cols=st.columns(min(len(top8),4))
+    for idx,h in enumerate(top8):
+        with cols[idx%4]: st.markdown(f"""<div class="overview-card {card_class}"><div class="ticker-label" style="color:{accent}">{h['ticker']}</div><div class="score-big" style="color:{h['verdict_color']}">{h['score']}</div><div class="verdict-label">{h['verdict']}</div></div>""",unsafe_allow_html=True)
+    pick=st.selectbox("בחר מניה לניתוח",[h["ticker"] for h in hits])
+    if st.button("▶ פתח ניתוח"):
+        df=get_data(pick)
+        if df: _dispatch_detail(pick,df,mode)
+
+def _dispatch_detail(t,df,mode):
+    if mode=="wyckoff": res=analyze_wyckoff(df); _render_w_detail(t,df,*res)
+    elif mode=="vp": res=analyze_vp(df); _render_vp_detail(t,df,res[0],res[1],res[2],res[3],res[4])
+    elif mode=="vwap": res=analyze_vwap(df); _render_vw_detail(t,df,res[0],res[1],res[2],res[3],res[4])
+    else: res=analyze_composite(df); _render_composite_detail(t,df,res[0],res[1],res[2],res[3],res[4],res[5],res[6])
+
+def _render_criteria(criteria,box_pos,box_neg):
+    for c in criteria:
+        box=box_pos if c["hit"] else box_neg; lbl="✅ הצליח" if c["hit"] else "❌ נכשל"; cls="hit" if c["hit"] else "miss"
+        st.markdown(f"""<div class="score-reason-box {box}"><div class="criteria-row"><strong>{c['name']}</strong><span><span class="{cls}">{lbl}</span> | <strong>{c['earned']}/{c['points']}</strong></span></div></div>""",unsafe_allow_html=True)
+
+def _render_w_detail(t,df,score,criteria,verdict,vcolor,prereq,dd):
+    st.plotly_chart(render_gauge(score,verdict,vcolor,"wyckoff"),use_container_width=True); _render_criteria(criteria,"positive","negative"); st.plotly_chart(render_wyckoff_chart(df),use_container_width=True)
+def _render_vp_detail(t,df,score,criteria,verdict,vcolor,vpd):
+    st.plotly_chart(render_gauge(score,verdict,vcolor,"vp"),use_container_width=True); _render_criteria(criteria,"vp-positive","vp-negative"); st.plotly_chart(render_vp_chart(df,vpd,t),use_container_width=True)
+def _render_vw_detail(t,df,score,criteria,verdict,vcolor,vwap_data):
+    st.plotly_chart(render_gauge(score,verdict,vcolor,"vwap"),use_container_width=True); _render_criteria(criteria,"vw-positive","vw-negative"); st.plotly_chart(render_vwap_chart(df,vwap_data,t),use_container_width=True)
+def _render_composite_detail(t,df,composite,vcolor,verdict,signal_class,action,breakdown,detail):
+    st.plotly_chart(render_gauge(composite,verdict,vcolor,"composite"),use_container_width=True)
+
+def _scan_controls(mode, scan_key_prefix):
+    fc1,fc2=st.columns(2)
+    with fc1: min_s=st.slider("ציון מינימום",60,95,80,5,key=f"{scan_key_prefix}_min")
+    with fc2: max_r=st.slider("מקסימום תוצאות",3,30,10,1,key=f"{scan_key_prefix}_max")
+    return min_s,max_r
+
+def _ticker_input(key_prefix):
+    ci,cb=st.columns([4,1])
+    with ci: raw=st.text_input("טיקרים","NVDA, MSFT",key=f"{key_prefix}_input")
+    with cb: st.markdown("<div style='margin-top:28px'></div>",unsafe_allow_html=True); run=st.button("▶ הרץ",key=f"{key_prefix}_run")
+    return raw,run
+
+def _run_specific(raw, mode, analyze_fn, render_fn, sub_state_key):
+    tickers=[t.strip().upper() for t in raw.replace(","," ").split() if t.strip()]
+    for t in tickers:
+        df=get_data(t)
+        if df is not None: render_fn(t,df,analyze_fn(df))
+
+def _wrap_w(t,df,res):    _render_w_detail(t,df,*res)
+def _wrap_vp(t,df,res):   _render_vp_detail(t,df,res[0],res[1],res[2],res[3],res[4])
+def _wrap_vw(t,df,res):   _render_vw_detail(t,df,res[0],res[1],res[2],res[3],res[4])
+def _wrap_comp(t,df,res): _render_composite_detail(t,df,res[0],res[1],res[2],res[3],res[4],res[5],res[6])
+
+# ============================================================
+# NEW BACKTEST SCREEN
+# ============================================================
+def screen_backtest():
+    st.markdown("""
+    <div class="header-box composite" style="background:linear-gradient(135deg,#121a24,#1a2636);border:1px solid #2a4a6a;">
+      <h2>📈 BACKTEST ENGINE</h2>
+      <p>הרצת סימולציות ואסטרטגיות על נתוני עבר.</p>
+    </div>""",unsafe_allow_html=True)
+    
+    st.markdown("### הגדרות הבק-טסטינג")
+    try:
+        # כאן המערכת מריצה ומציגה את הקוד של backtest_engine.py
+        # אם יש לך פונקציה מסוימת שמפעילה את ה-UI שם (כמו run_ui או main), תסיר את ה-# מהשורה הבאה:
+        # backtest_engine.run_ui()
+        st.info("💡 מודול backtest_engine זמין ומחובר! ברגע שתגדיר בתוכו פונקציה לתצוגה, תוכל להריץ אותה ישירות מכאן.")
+    except Exception as e:
+        st.error(f"⚠️ שגיאה בטעינת הבק-טסט: {e}")
+
+# ============================================================
+# ROUTER DISPATCH
+# ============================================================
+routes = {
+    "wyckoff": screen_wyckoff,
+    "vp": screen_vp,
+    "vwap": screen_vwap,
+    "composite": screen_composite,
+    "backtest": screen_backtest
+}
 routes[st.session_state.mode]()
