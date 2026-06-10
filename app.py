@@ -369,29 +369,75 @@ def _render_criteria(criteria):
 
 
 # ============================================================
-# חלק 16: מודול 1 - תיאוריית וויקוף (Wyckoff)
+# חלק 16: מודול 1 - מנוע Wyckoff מתקדם ומבני (Structural Engine)
 # ============================================================
 def analyze_wyckoff(df):
-    score=0; criteria=[]; high_3m=df["Close"].iloc[-65:].max(); cur=df["Close"].iloc[-1]; dd=(high_3m-cur)/high_3m; prereq=dd>=0.12
-    sc_win=df.iloc[-30:]; sc_c=sc_win[(sc_win["Volume"]>=sc_win["VOL_MEAN"]*2.0)&(sc_win["LOWER_SHADOW"]>sc_win["BODY"]*1.2)]
-    sc_found=len(sc_c)>0; sc_pts=25 if (sc_found and prereq) else 0; score+=sc_pts
-    criteria.append({"name":"Selling Climax (SC)","hit":sc_found and prereq,"points":25,"earned":sc_pts,"explanation":"זנב קונים וווליום חריג בשפל."})
-    vd="סבירות גבוהה לאיסוף מוסדי" if score>=75 else "סימנים חלקיים לאיסוף" if score>=45 else "אין ראיות לאיסוף"
-    vc="#26a69a" if score>=75 else "#ffa726" if score>=45 else "#ef5350"
+    score = 0; criteria = []
+    
+    # תנאי סף: נדרשת ירידה משמעותית כדי שהאיסוף יהיה רלוונטי
+    high_3m = df["Close"].iloc[-65:].max()
+    cur = df["Close"].iloc[-1]
+    dd = (high_3m - cur) / high_3m
+    prereq = dd >= 0.12 # ירידה של לפחות 12%
+
+    # 1. Selling Climax (SC) - זיהוי באמצעות VSA (Volume Spread Analysis)
+    sc_win = df.iloc[-30:]
+    sc_c = sc_win[(sc_win["Volume"] >= sc_win["VOL_MEAN"] * 2.0) & (sc_win["LOWER_SHADOW"] > sc_win["BODY"] * 1.5)]
+    sc_found = len(sc_c) > 0
+    pts1 = 20 if (sc_found and prereq) else 0; score += pts1
+    criteria.append({"name":"Phase A: Selling Climax (SC)","hit":sc_found and prereq,"points":20,"earned":pts1,"explanation":"זיהוי מאמץ מוסדי מסיבי בבלימת הירידה (ווליום חריג עליון + זנב קונים)."})
+
+    # 2. Automatic Rally (AR) & Secondary Test (ST)
+    ar_st_found = False
+    if sc_found:
+        sc_idx = sc_c.index[-1]
+        post_sc = df.loc[sc_idx:].iloc[1:15]
+        if len(post_sc) >= 3:
+            ar_rally = post_sc["High"].max() > df.loc[sc_idx, "High"] * 1.02
+            st_test = post_sc["Low"].min() >= df.loc[sc_idx, "Low"] * 0.98 # שפל גבוה או שווה
+            st_vol = post_sc["Volume"].mean() < sc_c["Volume"].iloc[-1] # ווליום יורד בטסט
+            ar_st_found = ar_rally and st_test and st_vol
+    pts2 = 20 if ar_st_found else 0; score += pts2
+    criteria.append({"name":"Phase B: AR & Secondary Test","hit":ar_st_found,"points":20,"earned":pts2,"explanation":"תגובה אוטומטית למעלה ובדיקה חוזרת של אזור השפל בווליום נמוך (היצע דליל/מוכרים נעלמו)."})
+
+    # 3. זיהוי ה"קפיץ" - Spring / Terminal Shakeout
+    low_20 = df["Low"].rolling(20).min().iloc[-2] # השפל של ה-20 יום לפני היום
+    is_spring = (df["Low"].iloc[-1] < low_20) and (df["Close"].iloc[-1] > low_20)
+    pts3 = 30 if is_spring else 0; score += pts3
+    criteria.append({"name":"Phase C: Spring / Shakeout","hit":is_spring,"points":30,"earned":pts3,"explanation":"ניקוי סטופים אגרסיבי: שבירה של שפל התמיכה המדומה וחזרה מיידית למעלה אל תוך הטווח."})
+
+    # 4. Phase C/D: יציבות בווליום והתכווצות תנודתיות (Supply Absorption)
+    recent_vol_stability = df["Volume"].iloc[-10:].std() / df["Volume"].iloc[-10:].mean()
+    is_absorbed = recent_vol_stability < 0.45 and (df["Close"].iloc[-1] > df["Close"].rolling(20).mean().iloc[-1])
+    pts4 = 30 if is_absorbed else 0; score += pts4
+    criteria.append({"name":"Phase C/D: Supply Absorption","hit":is_absorbed,"points":30,"earned":pts4,"explanation":"התייבשות ווליום המוכרים וסגירה מעל ממוצע 20 - המוסדיים ספגו את כל ההיצע."})
+
+    vd = "איסוף מוסדי מובהק (Wyckoff)" if score >= 70 else "סימני התבססות חלקיים" if score >= 40 else "אין תבנית Wyckoff חוקית"
+    vc = "#26a69a" if score >= 70 else "#ffa726" if score >= 40 else "#ef5350"
     return score, criteria, vd, vc
 
+def render_wyckoff_chart(df):
+    dc = df.iloc[-90:].copy() # תצוגה של 3 חודשים כדי לראות מבנה מלא
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.04)
+    fig.add_trace(go.Candlestick(x=dc.index, open=dc["Open"], high=dc["High"], low=dc["Low"], close=dc["Close"], name="Price"), row=1, col=1)
+    fig.add_trace(go.Bar(x=dc.index, y=dc["Volume"], name="Volume", marker_color="#4fc3f7"), row=2, col=1)
+    fig.update_layout(height=450, paper_bgcolor="#0a1520", plot_bgcolor="#0d1b2a", font_color="#e0eaf4", xaxis_rangeslider_visible=False, margin=dict(t=10, b=10, l=10, r=10))
+    return fig
+
 def screen_wyckoff():
-    st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF ACCUMULATION</h2></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF 2.0 - STRUCTURAL ENGINE</h2><p>מנוע Wyckoff מבני מתקדם לזיהוי שלבי איסוף: Selling Climax, Secondary Test, Spring, ו-Supply Absorption.</p></div>""",unsafe_allow_html=True)
     c1, c2 = st.columns([4, 1])
     with c1: ticker = st.text_input("סימול מניה (Wyckoff)", "NVDA")
     with c2: 
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-        if st.button("▶ נתח", use_container_width=True):
-            df = get_data(ticker.upper()); col1, col2 = st.columns([1, 2])
+        if st.button("▶ נתח שלבי Wyckoff", use_container_width=True):
+            df = get_data(ticker.upper())
             if df is not None:
                 score, criteria, vd, vc = analyze_wyckoff(df)
+                col1, col2 = st.columns([1, 2])
                 with col1: st.plotly_chart(render_gauge(score, vd, vc), use_container_width=True)
                 with col2: _render_criteria(criteria)
+                st.plotly_chart(render_wyckoff_chart(df), use_container_width=True)
 
 
 # ============================================================
@@ -448,7 +494,6 @@ def screen_backtest():
 # חלק 19: פונקציות ML - Export ו-Load של המודל
 # ============================================================
 def export_model_to_base64(model, metadata):
-    """המרת מודל ל-Base64 עם metadata"""
     model_data = {
         "model": pickle.dumps(model),
         "metadata": metadata,
@@ -459,7 +504,6 @@ def export_model_to_base64(model, metadata):
     return encoded
 
 def load_model_from_base64(encoded_str):
-    """טעינת מודל מ-Base64"""
     try:
         decoded = base64.b64decode(encoded_str.encode("utf-8"))
         model_data = pickle.loads(decoded)
@@ -469,7 +513,6 @@ def load_model_from_base64(encoded_str):
         return None, None
 
 def get_model_summary(model, metadata):
-    """חישוב סטטיסטיקה על המודל"""
     importances = model.feature_importances_
     top_factors = sorted(
         zip(SignalDebugger.LABELS.keys(), importances),
@@ -493,6 +536,7 @@ def get_model_summary(model, metadata):
         ]
     }
     return summary
+
 
 # ============================================================
 # חלק 20: מודול 6 - מסך אימון למידת המכונה (ML Trainer)
@@ -560,18 +604,16 @@ def screen_ml_trainer():
                     engine = FactorEngine(BacktestConfig())
                     factors = engine.compute(df)
                 
-                # חישוב target (outperformance מ-SPY, 10 ימים קדימה)
                 spy_return = df["spy_close"].shift(-10) / df["spy_close"] - 1
                 stock_return = df["Close"].shift(-10) / df["Close"] - 1
                 alpha = stock_return - spy_return
                 
                 valid_idx = alpha.notna()
                 X = factors[valid_idx].copy()
-                y = (alpha[valid_idx] > 0.02).astype(int).values  # Outperformance > 2%
+                y = (alpha[valid_idx] > 0.02).astype(int).values 
                 
                 st.success(f"✅ Positive samples: {y.sum()}/{len(y)} ({y.mean()*100:.1f}%)")
                 
-                # Train/Test Split (80/20 זמני)
                 split_idx = int(len(X) * 0.8)
                 X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
                 y_train, y_test = y[:split_idx], y[split_idx:]
@@ -604,7 +646,6 @@ def screen_ml_trainer():
                     st.session_state.ml_metadata = metadata
                     st.session_state.use_ml = True
                     
-                    # תצוגת תוצאות
                     st.markdown("---")
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -635,7 +676,6 @@ def screen_ml_trainer():
                     
                     st.success("✅ אימון המודל הסתיים בהצלחה!")
                     
-                    # הצגת Top Factors
                     st.markdown("### 📊 הפקטורים החשובים ביותר")
                     importances = model.feature_importances_
                     top_factors = sorted(
@@ -673,12 +713,8 @@ def screen_ml_trainer():
             st.markdown("**📤 Export כעת לקופסה:**")
             encoded = export_model_to_base64(st.session_state.ml_model, summary)
             
-            # הצג רק חלק מהקוד (לא כל הקוד)
             preview = encoded[:80] + "..." if len(encoded) > 80 else encoded
-            st.text_area("✂️ העתק את הקוד הזה והדבק באתר אחר (GitHub README, וכ׳)", value=encoded, height=150, disabled=True)
-            
-            if st.button("📋 העתק לקליפבורד", use_container_width=True):
-                st.toast("✅ הקוד בקליפבורד שלך (אתה צריך להעתיק ידנית מהתחנה למעלה)")
+            st.text_area("✂️ העתק את הקוד הזה והדבק באתר אחר", value=encoded, height=150, disabled=True)
             
             if st.button("🗑️ מחק מודל מהזיכרון", use_container_width=True, type="secondary"):
                 st.session_state.ml_model = None
