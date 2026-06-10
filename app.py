@@ -14,7 +14,6 @@ import pickle
 import base64
 import json
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
 from datetime import datetime
 import time
 
@@ -106,7 +105,6 @@ for col,(mode_key,label) in zip(cols,nav):
             st.session_state.mode = mode_key; st.rerun()
 st.markdown("---")
 
-# חיווי להפעלת מודל ה-ML
 if st.session_state.use_ml and st.session_state.ml_model is not None:
     metadata = st.session_state.ml_metadata or {}
     acc = metadata.get("test_acc", 0.0)
@@ -123,7 +121,7 @@ class BacktestConfig:
     slippage: float = 0.0005
     initial_capital: float = 100_000.0
     position_size: float = 0.10
-    hold_days: int = 20
+    hold_days: int = 40 # הוארך מ-20 ל-40 כדי למקסם רווח על איסוף מוסדי
     min_score: int = 65
     exit_score: int = 35
     period: str = "2y"
@@ -192,7 +190,7 @@ class FactorEngine:
 
 
 # ============================================================
-# חלק 10: חישוב פקטורים 25 עד 35 והחזרת המטריצה
+# חלק 10: חישוב פקטורים 25 עד 35
 # ============================================================
         f["f25_rvol_anomaly"] = ((rvol - rvol.rolling(60).mean()) / rvol.rolling(60).std().replace(0, np.nan)).clip(-3, 3)
         f["f26_accept_reject"] = ((df["Close"] > (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean() - ((df["Close"] < (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean()
@@ -211,17 +209,22 @@ class FactorEngine:
 
 
 # ============================================================
-# חלק 11: חישוב הציון המוסדי (CIS) - מתוקן
+# חלק 11: חישוב הציון המוסדי (CIS)
 # ============================================================
-    def composite_cis(self, factors: pd.DataFrame) -> pd.Series:
+    def composite_cis(self, factors: pd.DataFrame, df: pd.DataFrame = None) -> pd.Series:
         if st.session_state.use_ml and st.session_state.ml_model is not None:
             model = st.session_state.ml_model
-            # ניסיון חילוץ הסתברויות, אם לא מצליח - שימוש בתוצאה בינארית
             try:
                 probs = model.predict_proba(factors)[:, 1]
             except:
                 probs = model.predict(factors)
             score = pd.Series(probs * 100, index=factors.index)
+            
+            # מנגנון תיקון לשמרנות המודל - מתגמל מניות עם מומנטום שזיהו עניין מינימלי
+            if df is not None:
+                sma50 = df["Close"].rolling(50).mean()
+                boost = ((score > 10) & (df["Close"] > sma50)).astype(float) * 20
+                score = (score + boost).clip(0, 100)
         else:
             w = {
                 "f01_liquidity_gap": 3, "f02_volatility_squeeze": 4, "f03_regime": 5, "f04_absorption": 6,
@@ -243,6 +246,7 @@ class FactorEngine:
 
         if "f11_kill_switch" in factors.columns: score = score * (1 - factors["f11_kill_switch"])
         return score.round(1)
+
 
 # ============================================================
 # חלק 12: פונקציית הדיבאג והוצאת הפקטורים הדומיננטיים
@@ -295,7 +299,7 @@ class BacktestEngine:
             except: df["spy_close"] = df["Close"]
 
             f = self.factors.compute(df)
-            cis = self.factors.composite_cis(f)
+            cis = self.factors.composite_cis(f, df)
 
 
 # ============================================================
@@ -579,7 +583,7 @@ def screen_ml_trainer():
                 X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
                 y_train, y_test = y[:split_idx], y[split_idx:]
                 
-                with st.spinner("מאמן מודל RandomForest עם regularization..."):
+                with st.spinner("מאמן מודל RandomForest..."):
                     model = RandomForestClassifier(n_estimators=150, max_depth=4, min_samples_split=50, min_samples_leaf=25, random_state=42, n_jobs=-1)
                     model.fit(X_train, y_train)
                     
@@ -643,7 +647,8 @@ def screen_scanner():
                 else:
                     engine = FactorEngine(BacktestConfig())
                     factors = engine.compute(df)
-                    cis_score = engine.composite_cis(factors).iloc[-1]
+                    # כאן אנחנו מעבירים גם את ה-df כדי שהמערכת תוכל לתת בוסט למניות עם מומנטום
+                    cis_score = engine.composite_cis(factors, df).iloc[-1]
                     verdict = "Strong Signal" if cis_score >= 75 else "Watch" if cis_score >= 60 else "Wait"
                     results.append({"Ticker": ticker, "Score": cis_score, "Engine": "CIS", "Verdict": verdict})
             
@@ -661,11 +666,9 @@ def screen_scanner():
                 df_results = df_results[df_results["Score"] >= threshold]
             
             if not df_results.empty:
-                st.success(f"📊 מציג {len(df_results)} תוצאות (ציונים ירוקים מעידים על קרבה לאיסוף מוסדי):")
-                st.dataframe(
-                    df_results.style.background_gradient(cmap="Greens", subset=["Score"]),
-                    use_container_width=True
-                )
+                st.success(f"📊 מציג {len(df_results)} תוצאות:")
+                # מסירים את ה-background_gradient כדי למנוע את השגיאה של Matplotlib בענן
+                st.dataframe(df_results, use_container_width=True)
             else:
                 st.warning(f"לא נמצאו מניות שעברו את הרף הקריטי ({threshold}). סמן 'הצג הכל' כדי לראות את הציונים הנמוכים.")
         else:
