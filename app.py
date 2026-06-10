@@ -210,13 +210,17 @@ class FactorEngine:
         return f.fillna(0)
 
 
-# ============================================================
-# חלק 11: חישוב הציון המוסדי (CIS) - ML או סטטי
+#  ============================================================
+# חלק 11: חישוב הציון המוסדי (CIS) - מתוקן
 # ============================================================
     def composite_cis(self, factors: pd.DataFrame) -> pd.Series:
         if st.session_state.use_ml and st.session_state.ml_model is not None:
             model = st.session_state.ml_model
-            probs = model.predict_proba(factors)[:, 1]
+            # תיקון: מנסים לחלץ הסתברויות, אם נכשל - משתמשים ב-predict רגיל
+            try:
+                probs = model.predict_proba(factors)[:, 1]
+            except:
+                probs = model.predict(factors)
             score = pd.Series(probs * 100, index=factors.index)
         else:
             w = {
@@ -239,9 +243,7 @@ class FactorEngine:
 
         if "f11_kill_switch" in factors.columns: score = score * (1 - factors["f11_kill_switch"])
         return score.round(1)
-
-
-# ============================================================
+ ============================================================
 # חלק 12: פונקציית הדיבאג והוצאת הפקטורים הדומיננטיים
 # ============================================================
 class SignalDebugger:
