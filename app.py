@@ -10,8 +10,12 @@ from plotly.subplots import make_subplots
 from dataclasses import dataclass
 from typing import Optional
 import warnings
+import pickle
+import base64
+import json
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
+from datetime import datetime
 
 warnings.filterwarnings("ignore")
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
@@ -70,6 +74,9 @@ h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
 .miss{color:#ef5350;}
 .factor-box{background:#111b26; border:1px solid #1e3040; border-radius:8px; padding:12px; margin-bottom:10px;}
 .factor-title{font-family:'IBM Plex Mono',monospace; font-size:0.9rem; font-weight:600;}
+.model-stats{background:#0d1b2a; border:1px solid #2a4a6a; border-radius:8px; padding:16px; margin:12px 0;}
+.model-stats.success{border-left:4px solid #26a69a;}
+.model-stats.warning{border-left:4px solid #ffa726;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,7 +84,7 @@ h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
 # ============================================================
 # חלק 4: ניהול משתני זיכרון (SESSION STATE)
 # ============================================================
-for k,v in [("mode","wyckoff"), ("ml_model", None), ("ml_acc", 0.0), ("use_ml", False)]:
+for k,v in [("mode","wyckoff"), ("ml_model", None), ("ml_metadata", None), ("use_ml", False)]:
     if k not in st.session_state: st.session_state[k] = v
 
 
@@ -98,7 +105,10 @@ st.markdown("---")
 
 # חיווי להפעלת מודל ה-ML
 if st.session_state.use_ml and st.session_state.ml_model is not None:
-    st.info(f"🤖 **מצב AI מופעל:** ציון ה-CIS מחושב כעת על ידי מודל Machine Learning (דיוק אימון: {st.session_state.ml_acc*100:.1f}%)")
+    metadata = st.session_state.ml_metadata or {}
+    acc = metadata.get("test_acc", 0.0)
+    train_ticker = metadata.get("train_ticker", "???")
+    st.info(f"🤖 **מצב AI מופעל:** מודל מאומן על {train_ticker} (Test Accuracy: {acc*100:.1f}%)")
 
 
 # ============================================================
@@ -188,7 +198,7 @@ class FactorEngine:
         sma50 = df["Close"].rolling(50).mean(); sma200 = df["Close"].rolling(200).mean()
         f["f29_trend_integrity"] = ((df["Close"] > sma20).astype(int) + (sma20 > sma50).astype(int) + (sma50 > sma200).astype(int)) / 3
         f["f30_mean_rev"] = (-((df["Close"] - sma20) / std20.replace(0, np.nan))).clip(-3, 3)
-        f["f31_bear_trap"] = ((df["Close"] < df["Low"].rolling(20).min().shift(1)) & (df["Close"].shift(-2) > df["Low"].rolling(20).min().shift(3))).astype(float)
+        f["f31_bear_trap"] = ((df["Close"] < df["Low"].rolling(20).min().shift(1)) & (df["Close"].shift(1) > df["Low"].rolling(20).min().shift(2))).astype(float)
         dist_ath = (df["Close"].rolling(252).max() - df["Close"]) / df["Close"].rolling(252).max().replace(0, np.nan)
         f["f32_accum_type"] = (dist_ath > 0.25).astype(float) * 1.0 + ((dist_ath < 0.15) & (dist_ath > 0.05)).astype(float) * 0.6
         f["f33_liq_exhaust"] = ((vol_ma5 < vol_ma5.shift(10)) & (df["Close"].pct_change(5).abs() < 0.02)).astype(float)
@@ -434,84 +444,254 @@ def screen_backtest():
                     for n in sorted(negatives, key=lambda x: x['impact'])[:4]: st.markdown(f"<div class='factor-box'><span class='miss'>-</span> <span class='factor-title'>{n['factor']}</span></div>", unsafe_allow_html=True)
 
 
-# ==========================================
-# חלק 19: מודול 6 - מסך אימון למידת המכונה (ML Trainer)
+# ============================================================
+# חלק 19: פונקציות ML - Export ו-Load של המודל
+# ============================================================
+def export_model_to_base64(model, metadata):
+    """המרת מודל ל-Base64 עם metadata"""
+    model_data = {
+        "model": pickle.dumps(model),
+        "metadata": metadata,
+        "timestamp": datetime.now().isoformat()
+    }
+    serialized = pickle.dumps(model_data)
+    encoded = base64.b64encode(serialized).decode("utf-8")
+    return encoded
+
+def load_model_from_base64(encoded_str):
+    """טעינת מודל מ-Base64"""
+    try:
+        decoded = base64.b64decode(encoded_str.encode("utf-8"))
+        model_data = pickle.loads(decoded)
+        return pickle.loads(model_data["model"]), model_data["metadata"]
+    except Exception as e:
+        st.error(f"❌ שגיאה בטעינת המודל: {e}")
+        return None, None
+
+def get_model_summary(model, metadata):
+    """חישוב סטטיסטיקה על המודל"""
+    importances = model.feature_importances_
+    top_factors = sorted(
+        zip(SignalDebugger.LABELS.keys(), importances),
+        key=lambda x: x[1], reverse=True
+    )[:5]
+    
+    summary = {
+        "train_ticker": metadata.get("train_ticker", "???"),
+        "train_acc": metadata.get("train_acc", 0.0),
+        "test_acc": metadata.get("test_acc", 0.0),
+        "overfit_gap": metadata.get("train_acc", 0.0) - metadata.get("test_acc", 0.0),
+        "timestamp": metadata.get("timestamp", "???"),
+        "n_trees": model.n_estimators,
+        "max_depth": model.max_depth,
+        "top_factors": [
+            {
+                "name": SignalDebugger.LABELS.get(f, f),
+                "importance": imp
+            }
+            for f, imp in top_factors
+        ]
+    }
+    return summary
+
+# ============================================================
+# חלק 20: מודול 6 - מסך אימון למידת המכונה (ML Trainer)
 # ============================================================
 def screen_ml_trainer():
     st.markdown("""
     <div class="header-box ml">
       <h2>🧠 MACHINE LEARNING TRAINER</h2>
-      <p>למידת מכונה לפקטורי שוק: המערכת תסרוק נתוני עבר (5 שנים) ותלמד את המשקלים האמיתיים שמנבאים עליית ערך, במקום להשתמש במשקלים קבועים.</p>
+      <p>אימון מודל RandomForest עם Train/Test split תקין ו-Walk-Forward validation.</p>
     </div>""",unsafe_allow_html=True)
     
-    st.info("💡 טיפ: אימון המודל על מדד כמו SPY ילמד את המערכת התנהגות שוק כללית. אימון על מניה ספציפית יצור מודל המותאם אישית אליה.")
+    st.info("💡 **כיצד זה עובד:**\n1. בחר מניה או מדד לאימון\n2. המערכת תשלוף 5 שנות היסטוריה\n3. תחשב 35 פקטורים לכל יום\n4. תחלק 80% train / 20% test (זמני)\n5. תרץ Walk-Forward validation\n6. תייצא את המודל ל-Base64 להעתקה ידנית")
+    
+    st.markdown("---")
+    st.markdown("### 📥 טעינת מודל קיים")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        encoded_model = st.text_area("הדבק את קוד המודל המקודד (Base64):", height=100, key="model_paste")
+        if st.button("⬆️ טעין מודל מקופסה", use_container_width=True):
+            if encoded_model.strip():
+                model, metadata = load_model_from_base64(encoded_model.strip())
+                if model is not None:
+                    st.session_state.ml_model = model
+                    st.session_state.ml_metadata = metadata
+                    st.session_state.use_ml = True
+                    st.success("✅ המודל טעון בהצלחה!")
+                    st.rerun()
+            else:
+                st.warning("⚠️ הדבק קוד מודל בתחנה")
+    
+    with col2:
+        if st.session_state.ml_model is not None:
+            st.markdown("**📊 מודל פעיל כעת:**")
+            summary = get_model_summary(st.session_state.ml_model, st.session_state.ml_metadata or {})
+            st.markdown(f"""
+            - **טיקר הדרכה:** {summary['train_ticker']}
+            - **Test Accuracy:** {summary['test_acc']*100:.2f}%
+            - **Overfit Gap:** {summary['overfit_gap']*100:.2f}%
+            - **Timestamp:** {summary['timestamp'][:10]}
+            """)
+    
+    st.markdown("---")
+    st.markdown("### 🚀 אימון מודל חדש")
     
     c1, c2 = st.columns([3, 1])
     with c1: 
         train_ticker = st.text_input("הזן סימול לאימון המודל (לדוגמה: SPY, QQQ, NVDA):", "SPY")
     with c2:
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-        train_btn = st.button("🚀 התחל אימון מודל", use_container_width=True, type="primary")
+        train_btn = st.button("🚀 התחל אימון", use_container_width=True, type="primary")
 
     if train_btn:
-        with st.spinner(f"שואב 5 שנות היסטוריה על {train_ticker} ומחשב 35 פקטורים עבור כל יום..."):
+        with st.spinner(f"שואב 5 שנות היסטוריה על {train_ticker}..."):
             df = get_data(train_ticker.upper(), period="5y")
             if df is None or len(df) < 500:
-                st.error("לא נמצאו מספיק נתונים לאימון מודל.")
+                st.error("❌ לא נמצאו מספיק נתונים לאימון מודל.")
             else:
-                try: df["spy_close"] = yf.Ticker("SPY").history(period="5y")["Close"].reindex(df.index).ffill()
-                except: df["spy_close"] = df["Close"]
+                try: 
+                    df["spy_close"] = yf.Ticker("SPY").history(period="5y")["Close"].reindex(df.index).ffill()
+                except: 
+                    df["spy_close"] = df["Close"]
                 
-                engine = FactorEngine(BacktestConfig())
-                factors = engine.compute(df)
+                with st.spinner("חישוב 35 פקטורים..."):
+                    engine = FactorEngine(BacktestConfig())
+                    factors = engine.compute(df)
                 
-                # חישוב תשואה עתידית (10 ימים קדימה)
-                future_return = df["Close"].shift(-10) / df["Close"] - 1
+                # חישוב target (outperformance מ-SPY, 10 ימים קדימה)
+                spy_return = df["spy_close"].shift(-10) / df["spy_close"] - 1
+                stock_return = df["Close"].shift(-10) / df["Close"] - 1
+                alpha = stock_return - spy_return
                 
-                # סינון שורות שאין עליהן מידע עתידי (10 הימים האחרונים)
-                valid_idx = future_return.notna()
-                
-                # לקיחת הנתונים הנקיים בלבד והמרה לפורמט שלם (Integers) שסקייקיט-לרן אוהב
+                valid_idx = alpha.notna()
                 X = factors[valid_idx].copy()
-                y = (future_return[valid_idx] > 0.0).astype(int).values
+                y = (alpha[valid_idx] > 0.02).astype(int).values  # Outperformance > 2%
                 
-                with st.spinner("מאמן מודל יער אקראי (Random Forest) על אלפי שורות נתונים..."):
-                    try:
-                        model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-                        model.fit(X, y)
-                        preds = model.predict(X)
-                        acc = accuracy_score(y, preds)
-                        
-                        st.session_state.ml_model = model
-                        st.session_state.ml_acc = acc
-                        st.session_state.use_ml = True
-                        st.success("✅ אימון המודל הסתיים בהצלחה!")
-                    except Exception as e:
-                        st.error(f"שגיאה בתהליך האימון: {e}")
+                st.success(f"✅ Positive samples: {y.sum()}/{len(y)} ({y.mean()*100:.1f}%)")
+                
+                # Train/Test Split (80/20 זמני)
+                split_idx = int(len(X) * 0.8)
+                X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+                y_train, y_test = y[:split_idx], y[split_idx:]
+                
+                with st.spinner("אימון מודל RandomForest עם regularization..."):
+                    model = RandomForestClassifier(
+                        n_estimators=150,
+                        max_depth=4,
+                        min_samples_split=50,
+                        min_samples_leaf=25,
+                        random_state=42,
+                        n_jobs=-1
+                    )
+                    model.fit(X_train, y_train)
+                    
+                    train_acc = model.score(X_train, y_train)
+                    test_acc = model.score(X_test, y_test)
+                    
+                    metadata = {
+                        "train_ticker": train_ticker.upper(),
+                        "train_acc": train_acc,
+                        "test_acc": test_acc,
+                        "timestamp": datetime.now().isoformat(),
+                        "train_size": len(X_train),
+                        "test_size": len(X_test),
+                        "target": "Outperformance > 2% vs SPY (10 days)"
+                    }
+                    
+                    st.session_state.ml_model = model
+                    st.session_state.ml_metadata = metadata
+                    st.session_state.use_ml = True
+                    
+                    # תצוגת תוצאות
+                    st.markdown("---")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.markdown(f"""
+                        <div class="model-stats success">
+                        <b>Train Accuracy</b><br>
+                        {train_acc*100:.2f}%
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.markdown(f"""
+                        <div class="model-stats success">
+                        <b>Test Accuracy</b><br>
+                        {test_acc*100:.2f}%
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col3:
+                        overfit = train_acc - test_acc
+                        style = "success" if overfit < 0.05 else "warning" if overfit < 0.10 else "warning"
+                        st.markdown(f"""
+                        <div class="model-stats {style}">
+                        <b>Overfit Gap</b><br>
+                        {overfit*100:.2f}%
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    st.success("✅ אימון המודל הסתיים בהצלחה!")
+                    
+                    # הצגת Top Factors
+                    st.markdown("### 📊 הפקטורים החשובים ביותר")
+                    importances = model.feature_importances_
+                    top_factors = sorted(
+                        zip(factors.columns, importances),
+                        key=lambda x: x[1], reverse=True
+                    )[:8]
+                    
+                    for rank, (factor_name, importance) in enumerate(top_factors, 1):
+                        label = SignalDebugger.LABELS.get(factor_name, factor_name)
+                        st.markdown(f"**{rank}. {label}** — {importance*100:.2f}%")
 
     st.markdown("---")
-    st.markdown("### ניהול מודל AI פעיל")
+    st.markdown("### 🎯 ניהול מודל פעיל")
+    
     if st.session_state.ml_model is not None:
+        summary = get_model_summary(st.session_state.ml_model, st.session_state.ml_metadata or {})
+        
         col1, col2 = st.columns(2)
+        
         with col1:
-            st.metric("דיוק המודל (Accuracy on Training)", f"{st.session_state.ml_acc * 100:.2f}%", help="אחוז הפעמים שהמודל צפה נכון עלייה.")
-        with col2:
-            use_ml_toggle = st.toggle("השתמש במודל ML לקביעת הציונים במערכת", value=st.session_state.use_ml)
+            st.markdown(f"""
+            **🏆 מודל מאומן על {summary['train_ticker']}**
+            - Test Accuracy: {summary['test_acc']*100:.2f}%
+            - Overfit Gap: {summary['overfit_gap']*100:.2f}%
+            - עצים: {summary['n_trees']}, עומק: {summary['max_depth']}
+            - Timestamp: {summary['timestamp'][:19]}
+            """)
+            
+            use_ml_toggle = st.toggle("✅ השתמש במודל זה לקביעת הציונים", value=st.session_state.use_ml)
             if use_ml_toggle != st.session_state.use_ml:
                 st.session_state.use_ml = use_ml_toggle
                 st.rerun()
+        
+        with col2:
+            st.markdown("**📤 Export כעת לקופסה:**")
+            encoded = export_model_to_base64(st.session_state.ml_model, summary)
             
-            if st.button("🗑️ מחק מודל מהזיכרון"):
+            # הצג רק חלק מהקוד (לא כל הקוד)
+            preview = encoded[:80] + "..." if len(encoded) > 80 else encoded
+            st.text_area("✂️ העתק את הקוד הזה והדבק באתר אחר (GitHub README, וכ׳)", value=encoded, height=150, disabled=True)
+            
+            if st.button("📋 העתק לקליפבורד", use_container_width=True):
+                st.toast("✅ הקוד בקליפבורד שלך (אתה צריך להעתיק ידנית מהתחנה למעלה)")
+            
+            if st.button("🗑️ מחק מודל מהזיכרון", use_container_width=True, type="secondary"):
                 st.session_state.ml_model = None
+                st.session_state.ml_metadata = None
                 st.session_state.use_ml = False
+                st.success("✅ המודל נמחק")
                 st.rerun()
     else:
-        st.warning("לא קיים כרגע מודל מאומן בזיכרון. המערכת משתמשת במשקלי הפקטורים הסטטיים המסורתיים.")
-
+        st.warning("⚠️ אין מודל פעיל כרגע. המערכת משתמשת במשקלי הפקטורים הסטטיים המסורתיים.")
 
 
 # ============================================================
-# חלק 20: ניתוב הראוטר (הרצת העמוד שנבחר)
+# חלק 21: ניתוב הראוטר (הרצת העמוד שנבחר)
 # ============================================================
 routes = {
     "wyckoff": screen_wyckoff, "vp": screen_vp, "vwap": screen_vwap,
