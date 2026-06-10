@@ -16,6 +16,7 @@ import json
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score
 from datetime import datetime
+import time
 
 warnings.filterwarnings("ignore")
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
@@ -59,12 +60,14 @@ h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
 .header-box.vwap   {background:linear-gradient(135deg,#0f2318,#1a3528);border:1px solid #2a6a4a;}
 .header-box.composite{background:linear-gradient(135deg,#1a1208,#2a1e08);border:1px solid #6a4a1a;}
 .header-box.ml     {background:linear-gradient(135deg,#1c0a20,#2e1236);border:1px solid #7b1fa2;}
+.header-box.scanner{background:linear-gradient(135deg,#0f231f,#1a3a35);border:1px solid #26a69a;}
 .header-box h2{font-family:'IBM Plex Mono',monospace;font-size:1.05rem;margin-bottom:12px;direction:ltr;}
 .header-box.wyckoff   h2{color:#4fc3f7;}
 .header-box.vp        h2{color:#ce93d8;}
 .header-box.vwap      h2{color:#4caf7d;}
 .header-box.composite h2{color:#ffa726;}
 .header-box.ml        h2{color:#e1bee7;}
+.header-box.scanner   h2{color:#80cbc4;}
 .header-box p{color:#b0c8e0;font-size:0.92rem;margin:6px 0;}
 .score-reason-box{background:#0d1b2a;border-left:4px solid #4fc3f7;border-radius:8px;padding:18px 22px;margin:10px 0;direction:rtl;color:#cde3f5;font-size:0.88rem;line-height:1.8;}
 .score-reason-box.positive{border-left-color:#26a69a;}
@@ -92,11 +95,11 @@ for k,v in [("mode","wyckoff"), ("ml_model", None), ("ml_metadata", None), ("use
 # חלק 5: תפריט ניווט עליון
 # ============================================================
 st.markdown("# INSTITUTIONAL SCOUT PRO")
-c1,c2,c3,c4,c5,c6 = st.columns(6)
+c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
 nav = [("wyckoff","⬛  Wyckoff"),("vp","🔮  Volume Profile"),
        ("vwap","📐  VWAP Deviation"),("composite","🏆  Composite Score"),
-       ("backtest","📈  Backtest"), ("ml","🧠  ML Trainer")]
-cols = [c1,c2,c3,c4,c5,c6]
+       ("backtest","📈  Backtest"), ("ml","🧠  ML Trainer"), ("scanner","🔎  Scanner")]
+cols = [c1,c2,c3,c4,c5,c6,c7]
 for col,(mode_key,label) in zip(cols,nav):
     with col:
         if st.button(label, use_container_width=True, type="primary" if st.session_state.mode==mode_key else "secondary", key=f"nav_{mode_key}"):
@@ -374,39 +377,34 @@ def _render_criteria(criteria):
 def analyze_wyckoff(df):
     score = 0; criteria = []
     
-    # תנאי סף: נדרשת ירידה משמעותית כדי שהאיסוף יהיה רלוונטי
     high_3m = df["Close"].iloc[-65:].max()
     cur = df["Close"].iloc[-1]
     dd = (high_3m - cur) / high_3m
-    prereq = dd >= 0.12 # ירידה של לפחות 12%
+    prereq = dd >= 0.12 
 
-    # 1. Selling Climax (SC) - זיהוי באמצעות VSA (Volume Spread Analysis)
     sc_win = df.iloc[-30:]
     sc_c = sc_win[(sc_win["Volume"] >= sc_win["VOL_MEAN"] * 2.0) & (sc_win["LOWER_SHADOW"] > sc_win["BODY"] * 1.5)]
     sc_found = len(sc_c) > 0
     pts1 = 20 if (sc_found and prereq) else 0; score += pts1
     criteria.append({"name":"Phase A: Selling Climax (SC)","hit":sc_found and prereq,"points":20,"earned":pts1,"explanation":"זיהוי מאמץ מוסדי מסיבי בבלימת הירידה (ווליום חריג עליון + זנב קונים)."})
 
-    # 2. Automatic Rally (AR) & Secondary Test (ST)
     ar_st_found = False
     if sc_found:
         sc_idx = sc_c.index[-1]
         post_sc = df.loc[sc_idx:].iloc[1:15]
         if len(post_sc) >= 3:
             ar_rally = post_sc["High"].max() > df.loc[sc_idx, "High"] * 1.02
-            st_test = post_sc["Low"].min() >= df.loc[sc_idx, "Low"] * 0.98 # שפל גבוה או שווה
-            st_vol = post_sc["Volume"].mean() < sc_c["Volume"].iloc[-1] # ווליום יורד בטסט
+            st_test = post_sc["Low"].min() >= df.loc[sc_idx, "Low"] * 0.98 
+            st_vol = post_sc["Volume"].mean() < sc_c["Volume"].iloc[-1] 
             ar_st_found = ar_rally and st_test and st_vol
     pts2 = 20 if ar_st_found else 0; score += pts2
-    criteria.append({"name":"Phase B: AR & Secondary Test","hit":ar_st_found,"points":20,"earned":pts2,"explanation":"תגובה אוטומטית למעלה ובדיקה חוזרת של אזור השפל בווליום נמוך (היצע דליל/מוכרים נעלמו)."})
+    criteria.append({"name":"Phase B: AR & Secondary Test","hit":ar_st_found,"points":20,"earned":pts2,"explanation":"תגובה אוטומטית למעלה ובדיקה חוזרת של אזור השפל בווליום נמוך (היצע דליל)."})
 
-    # 3. זיהוי ה"קפיץ" - Spring / Terminal Shakeout
-    low_20 = df["Low"].rolling(20).min().iloc[-2] # השפל של ה-20 יום לפני היום
+    low_20 = df["Low"].rolling(20).min().iloc[-2] 
     is_spring = (df["Low"].iloc[-1] < low_20) and (df["Close"].iloc[-1] > low_20)
     pts3 = 30 if is_spring else 0; score += pts3
-    criteria.append({"name":"Phase C: Spring / Shakeout","hit":is_spring,"points":30,"earned":pts3,"explanation":"ניקוי סטופים אגרסיבי: שבירה של שפל התמיכה המדומה וחזרה מיידית למעלה אל תוך הטווח."})
+    criteria.append({"name":"Phase C: Spring / Shakeout","hit":is_spring,"points":30,"earned":pts3,"explanation":"ניקוי סטופים אגרסיבי: שבירה של שפל התמיכה המדומה וחזרה מיידית למעלה."})
 
-    # 4. Phase C/D: יציבות בווליום והתכווצות תנודתיות (Supply Absorption)
     recent_vol_stability = df["Volume"].iloc[-10:].std() / df["Volume"].iloc[-10:].mean()
     is_absorbed = recent_vol_stability < 0.45 and (df["Close"].iloc[-1] > df["Close"].rolling(20).mean().iloc[-1])
     pts4 = 30 if is_absorbed else 0; score += pts4
@@ -417,7 +415,7 @@ def analyze_wyckoff(df):
     return score, criteria, vd, vc
 
 def render_wyckoff_chart(df):
-    dc = df.iloc[-90:].copy() # תצוגה של 3 חודשים כדי לראות מבנה מלא
+    dc = df.iloc[-90:].copy() 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.04)
     fig.add_trace(go.Candlestick(x=dc.index, open=dc["Open"], high=dc["High"], low=dc["Low"], close=dc["Close"], name="Price"), row=1, col=1)
     fig.add_trace(go.Bar(x=dc.index, y=dc["Volume"], name="Volume", marker_color="#4fc3f7"), row=2, col=1)
@@ -494,11 +492,7 @@ def screen_backtest():
 # חלק 19: פונקציות ML - Export ו-Load של המודל
 # ============================================================
 def export_model_to_base64(model, metadata):
-    model_data = {
-        "model": pickle.dumps(model),
-        "metadata": metadata,
-        "timestamp": datetime.now().isoformat()
-    }
+    model_data = {"model": pickle.dumps(model), "metadata": metadata, "timestamp": datetime.now().isoformat()}
     serialized = pickle.dumps(model_data)
     encoded = base64.b64encode(serialized).decode("utf-8")
     return encoded
@@ -514,11 +508,7 @@ def load_model_from_base64(encoded_str):
 
 def get_model_summary(model, metadata):
     importances = model.feature_importances_
-    top_factors = sorted(
-        zip(SignalDebugger.LABELS.keys(), importances),
-        key=lambda x: x[1], reverse=True
-    )[:5]
-    
+    top_factors = sorted(zip(SignalDebugger.LABELS.keys(), importances), key=lambda x: x[1], reverse=True)[:5]
     summary = {
         "train_ticker": metadata.get("train_ticker", "???"),
         "train_acc": metadata.get("train_acc", 0.0),
@@ -527,13 +517,7 @@ def get_model_summary(model, metadata):
         "timestamp": metadata.get("timestamp", "???"),
         "n_trees": model.n_estimators,
         "max_depth": model.max_depth,
-        "top_factors": [
-            {
-                "name": SignalDebugger.LABELS.get(f, f),
-                "importance": imp
-            }
-            for f, imp in top_factors
-        ]
+        "top_factors": [{"name": SignalDebugger.LABELS.get(f, f), "importance": imp} for f, imp in top_factors]
     }
     return summary
 
@@ -545,192 +529,140 @@ def screen_ml_trainer():
     st.markdown("""
     <div class="header-box ml">
       <h2>🧠 MACHINE LEARNING TRAINER</h2>
-      <p>אימון מודל RandomForest עם Train/Test split תקין ו-Walk-Forward validation.</p>
+      <p>אימון מודל RandomForest לניבוי תנועות שוק ויצירת משקלים דינמיים.</p>
     </div>""",unsafe_allow_html=True)
     
-    st.info("💡 **כיצד זה עובד:**\n1. בחר מניה או מדד לאימון\n2. המערכת תשלוף 5 שנות היסטוריה\n3. תחשב 35 פקטורים לכל יום\n4. תחלק 80% train / 20% test (זמני)\n5. תרץ Walk-Forward validation\n6. תייצא את המודל ל-Base64 להעתקה ידנית")
-    
-    st.markdown("---")
     st.markdown("### 📥 טעינת מודל קיים")
-    
     col1, col2 = st.columns(2)
     with col1:
-        encoded_model = st.text_area("הדבק את קוד המודל המקודד (Base64):", height=100, key="model_paste")
+        encoded_model = st.text_area("הדבק קוד מודל מקודד (Base64):", height=100, key="model_paste")
         if st.button("⬆️ טעין מודל מקופסה", use_container_width=True):
             if encoded_model.strip():
                 model, metadata = load_model_from_base64(encoded_model.strip())
                 if model is not None:
-                    st.session_state.ml_model = model
-                    st.session_state.ml_metadata = metadata
-                    st.session_state.use_ml = True
-                    st.success("✅ המודל טעון בהצלחה!")
-                    st.rerun()
-            else:
-                st.warning("⚠️ הדבק קוד מודל בתחנה")
-    
+                    st.session_state.ml_model = model; st.session_state.ml_metadata = metadata; st.session_state.use_ml = True
+                    st.success("✅ המודל טעון בהצלחה!"); st.rerun()
     with col2:
         if st.session_state.ml_model is not None:
-            st.markdown("**📊 מודל פעיל כעת:**")
             summary = get_model_summary(st.session_state.ml_model, st.session_state.ml_metadata or {})
-            st.markdown(f"""
-            - **טיקר הדרכה:** {summary['train_ticker']}
-            - **Test Accuracy:** {summary['test_acc']*100:.2f}%
-            - **Overfit Gap:** {summary['overfit_gap']*100:.2f}%
-            - **Timestamp:** {summary['timestamp'][:10]}
-            """)
+            st.markdown(f"**📊 מודל פעיל כעת:**\n- טיקר הדרכה: {summary['train_ticker']}\n- Test Accuracy: {summary['test_acc']*100:.2f}%")
     
     st.markdown("---")
     st.markdown("### 🚀 אימון מודל חדש")
-    
     c1, c2 = st.columns([3, 1])
-    with c1: 
-        train_ticker = st.text_input("הזן סימול לאימון המודל (לדוגמה: SPY, QQQ, NVDA):", "SPY")
-    with c2:
+    with c1: train_ticker = st.text_input("הזן סימול לאימון المודל (לדוגמה: SPY, QQQ, NVDA):", "SPY")
+    with c2: 
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
         train_btn = st.button("🚀 התחל אימון", use_container_width=True, type="primary")
 
     if train_btn:
         with st.spinner(f"שואב 5 שנות היסטוריה על {train_ticker}..."):
             df = get_data(train_ticker.upper(), period="5y")
-            if df is None or len(df) < 500:
-                st.error("❌ לא נמצאו מספיק נתונים לאימון מודל.")
-            else:
-                try: 
-                    df["spy_close"] = yf.Ticker("SPY").history(period="5y")["Close"].reindex(df.index).ffill()
-                except: 
-                    df["spy_close"] = df["Close"]
+            if df is not None and len(df) >= 500:
+                try: df["spy_close"] = yf.Ticker("SPY").history(period="5y")["Close"].reindex(df.index).ffill()
+                except: df["spy_close"] = df["Close"]
                 
-                with st.spinner("חישוב 35 פקטורים..."):
-                    engine = FactorEngine(BacktestConfig())
-                    factors = engine.compute(df)
+                engine = FactorEngine(BacktestConfig())
+                factors = engine.compute(df)
                 
                 spy_return = df["spy_close"].shift(-10) / df["spy_close"] - 1
                 stock_return = df["Close"].shift(-10) / df["Close"] - 1
                 alpha = stock_return - spy_return
-                
                 valid_idx = alpha.notna()
                 X = factors[valid_idx].copy()
                 y = (alpha[valid_idx] > 0.02).astype(int).values 
-                
-                st.success(f"✅ Positive samples: {y.sum()}/{len(y)} ({y.mean()*100:.1f}%)")
                 
                 split_idx = int(len(X) * 0.8)
                 X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
                 y_train, y_test = y[:split_idx], y[split_idx:]
                 
-                with st.spinner("אימון מודל RandomForest עם regularization..."):
-                    model = RandomForestClassifier(
-                        n_estimators=150,
-                        max_depth=4,
-                        min_samples_split=50,
-                        min_samples_leaf=25,
-                        random_state=42,
-                        n_jobs=-1
-                    )
+                with st.spinner("מאמן מודל RandomForest עם regularization..."):
+                    model = RandomForestClassifier(n_estimators=150, max_depth=4, min_samples_split=50, min_samples_leaf=25, random_state=42, n_jobs=-1)
                     model.fit(X_train, y_train)
                     
-                    train_acc = model.score(X_train, y_train)
-                    test_acc = model.score(X_test, y_test)
-                    
-                    metadata = {
-                        "train_ticker": train_ticker.upper(),
-                        "train_acc": train_acc,
-                        "test_acc": test_acc,
-                        "timestamp": datetime.now().isoformat(),
-                        "train_size": len(X_train),
-                        "test_size": len(X_test),
-                        "target": "Outperformance > 2% vs SPY (10 days)"
-                    }
-                    
+                    train_acc, test_acc = model.score(X_train, y_train), model.score(X_test, y_test)
                     st.session_state.ml_model = model
-                    st.session_state.ml_metadata = metadata
+                    st.session_state.ml_metadata = {"train_ticker": train_ticker.upper(), "train_acc": train_acc, "test_acc": test_acc, "timestamp": datetime.now().isoformat()}
                     st.session_state.use_ml = True
-                    
-                    st.markdown("---")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.markdown(f"""
-                        <div class="model-stats success">
-                        <b>Train Accuracy</b><br>
-                        {train_acc*100:.2f}%
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    with col2:
-                        st.markdown(f"""
-                        <div class="model-stats success">
-                        <b>Test Accuracy</b><br>
-                        {test_acc*100:.2f}%
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    with col3:
-                        overfit = train_acc - test_acc
-                        style = "success" if overfit < 0.05 else "warning" if overfit < 0.10 else "warning"
-                        st.markdown(f"""
-                        <div class="model-stats {style}">
-                        <b>Overfit Gap</b><br>
-                        {overfit*100:.2f}%
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    st.success("✅ אימון המודל הסתיים בהצלחה!")
-                    
-                    st.markdown("### 📊 הפקטורים החשובים ביותר")
-                    importances = model.feature_importances_
-                    top_factors = sorted(
-                        zip(factors.columns, importances),
-                        key=lambda x: x[1], reverse=True
-                    )[:8]
-                    
-                    for rank, (factor_name, importance) in enumerate(top_factors, 1):
-                        label = SignalDebugger.LABELS.get(factor_name, factor_name)
-                        st.markdown(f"**{rank}. {label}** — {importance*100:.2f}%")
+                    st.success("✅ אימון הסתיים בהצלחה!")
+            else: st.error("❌ לא נמצאו מספיק נתונים לאימון מודל.")
 
     st.markdown("---")
-    st.markdown("### 🎯 ניהול מודל פעיל")
-    
     if st.session_state.ml_model is not None:
         summary = get_model_summary(st.session_state.ml_model, st.session_state.ml_metadata or {})
-        
         col1, col2 = st.columns(2)
-        
         with col1:
-            st.markdown(f"""
-            **🏆 מודל מאומן על {summary['train_ticker']}**
-            - Test Accuracy: {summary['test_acc']*100:.2f}%
-            - Overfit Gap: {summary['overfit_gap']*100:.2f}%
-            - עצים: {summary['n_trees']}, עומק: {summary['max_depth']}
-            - Timestamp: {summary['timestamp'][:19]}
-            """)
-            
             use_ml_toggle = st.toggle("✅ השתמש במודל זה לקביעת הציונים", value=st.session_state.use_ml)
             if use_ml_toggle != st.session_state.use_ml:
-                st.session_state.use_ml = use_ml_toggle
-                st.rerun()
-        
+                st.session_state.use_ml = use_ml_toggle; st.rerun()
         with col2:
-            st.markdown("**📤 Export כעת לקופסה:**")
             encoded = export_model_to_base64(st.session_state.ml_model, summary)
-            
-            preview = encoded[:80] + "..." if len(encoded) > 80 else encoded
-            st.text_area("✂️ העתק את הקוד הזה והדבק באתר אחר", value=encoded, height=150, disabled=True)
-            
+            st.text_area("✂️ ייצוא קוד (העתק):", value=encoded, height=100, disabled=True)
             if st.button("🗑️ מחק מודל מהזיכרון", use_container_width=True, type="secondary"):
-                st.session_state.ml_model = None
-                st.session_state.ml_metadata = None
-                st.session_state.use_ml = False
-                st.success("✅ המודל נמחק")
-                st.rerun()
-    else:
-        st.warning("⚠️ אין מודל פעיל כרגע. המערכת משתמשת במשקלי הפקטורים הסטטיים המסורתיים.")
+                st.session_state.ml_model = None; st.session_state.ml_metadata = None; st.session_state.use_ml = False; st.rerun()
 
 
 # ============================================================
-# חלק 21: ניתוב הראוטר (הרצת העמוד שנבחר)
+# חלק 21: מודול 7 - סורק שוק חכם (Market Scanner)
+# ============================================================
+def screen_scanner():
+    st.markdown("""
+    <div class="header-box scanner">
+      <h2>🔎 MARKET SCANNER</h2>
+      <p>סורק אוטומטית את רשימת המניות לאיתור הזדמנויות איסוף מוסדיות בזמן אמת.</p>
+    </div>""",unsafe_allow_html=True)
+    
+    st.markdown("### הגדרות סריקה")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        engine_choice = st.radio("בחר מנוע סריקה:", ["Wyckoff Structural Engine (Phase C/D)", "Composite CIS Score (ML/Static)"])
+    with col2:
+        scan_limit = st.slider("מספר מניות לסריקה (מתוך רשימת SCAN_UNIVERSE):", min_value=10, max_value=len(SCAN_UNIVERSE), value=20, step=10)
+    
+    if st.button("🚀 התחל סריקת שוק", use_container_width=True, type="primary"):
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        tickers_to_scan = SCAN_UNIVERSE[:scan_limit]
+        
+        for i, ticker in enumerate(tickers_to_scan):
+            status_text.text(f"סורק את {ticker} ({i+1}/{scan_limit})... מתריע רק על חתימות חזקות.")
+            df = get_data(ticker, period="1y")
+            
+            if df is not None and len(df) > 50:
+                if "Wyckoff" in engine_choice:
+                    score, criteria, vd, vc = analyze_wyckoff(df)
+                    if score >= 40: # מסנן רק התבססויות ומעלה
+                        results.append({"Ticker": ticker, "Score": score, "Engine": "Wyckoff", "Verdict": vd})
+                else:
+                    engine = FactorEngine(BacktestConfig())
+                    factors = engine.compute(df)
+                    cis_score = engine.composite_cis(factors).iloc[-1]
+                    if cis_score >= 65: # מסנן רק איתותי Watch ומעלה
+                        verdict = "Strong Signal" if cis_score >= 75 else "Watch"
+                        results.append({"Ticker": ticker, "Score": cis_score, "Engine": "CIS", "Verdict": verdict})
+            
+            progress_bar.progress((i + 1) / scan_limit)
+            time.sleep(0.1) # מניעת חסימת API
+            
+        status_text.text("✅ הסריקה הושלמה!")
+        st.markdown("---")
+        
+        if results:
+            st.success(f"🔥 נמצאו {len(results)} הזדמנויות איסוף מובהקות:")
+            df_results = pd.DataFrame(results).sort_values(by="Score", ascending=False).reset_index(drop=True)
+            st.dataframe(df_results, use_container_width=True)
+        else:
+            st.warning("לא נמצאו מניות העומדות בקריטריוני האיסוף המחמירים כרגע. נסה שוב מאוחר יותר או הרחב את היקף הסריקה.")
+
+
+# ============================================================
+# חלק 22: ניתוב הראוטר (הרצת העמוד שנבחר)
 # ============================================================
 routes = {
     "wyckoff": screen_wyckoff, "vp": screen_vp, "vwap": screen_vwap,
-    "composite": screen_composite, "backtest": screen_backtest, "ml": screen_ml_trainer
+    "composite": screen_composite, "backtest": screen_backtest, 
+    "ml": screen_ml_trainer, "scanner": screen_scanner
 }
 routes[st.session_state.mode]()
