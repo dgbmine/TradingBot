@@ -550,7 +550,7 @@ def screen_ml_trainer():
     st.markdown("---")
     st.markdown("### 🚀 אימון מודל חדש")
     c1, c2 = st.columns([3, 1])
-    with c1: train_ticker = st.text_input("הזן סימול לאימון المודל (לדוגמה: SPY, QQQ, NVDA):", "SPY")
+    with c1: train_ticker = st.text_input("הזן סימול לאימון המודל (לדוגמה: SPY, QQQ, NVDA):", "SPY")
     with c2: 
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
         train_btn = st.button("🚀 התחל אימון", use_container_width=True, type="primary")
@@ -609,15 +609,18 @@ def screen_scanner():
     st.markdown("""
     <div class="header-box scanner">
       <h2>🔎 MARKET SCANNER</h2>
-      <p>סורק אוטומטית את רשימת המניות לאיתור הזדמנויות איסוף מוסדיות בזמן אמת.</p>
+      <p>סורק אוטומטית את רשימת המניות. הציונים מוצגים מהגבוה לנמוך כדי לזהות מי מתקרבת לשלב האיסוף.</p>
     </div>""",unsafe_allow_html=True)
     
     st.markdown("### הגדרות סריקה")
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1.5, 1, 1])
     with col1:
-        engine_choice = st.radio("בחר מנוע סריקה:", ["Wyckoff Structural Engine (Phase C/D)", "Composite CIS Score (ML/Static)"])
+        engine_choice = st.radio("בחר מנוע סריקה:", ["Wyckoff Structural Engine", "Composite CIS Score (ML/Static)"])
     with col2:
-        scan_limit = st.slider("מספר מניות לסריקה (מתוך רשימת SCAN_UNIVERSE):", min_value=10, max_value=len(SCAN_UNIVERSE), value=20, step=10)
+        scan_limit = st.slider("מספר מניות לסריקה (מהרשימה):", min_value=5, max_value=len(SCAN_UNIVERSE), value=20, step=5)
+    with col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        show_all = st.checkbox("הצג את כל התוצאות (כולל חלשות)", value=True)
     
     if st.button("🚀 התחל סריקת שוק", use_container_width=True, type="primary"):
         results = []
@@ -627,34 +630,43 @@ def screen_scanner():
         tickers_to_scan = SCAN_UNIVERSE[:scan_limit]
         
         for i, ticker in enumerate(tickers_to_scan):
-            status_text.text(f"סורק את {ticker} ({i+1}/{scan_limit})... מתריע רק על חתימות חזקות.")
+            status_text.text(f"מנתח את {ticker} ({i+1}/{scan_limit})...")
             df = get_data(ticker, period="1y")
             
             if df is not None and len(df) > 50:
                 if "Wyckoff" in engine_choice:
                     score, criteria, vd, vc = analyze_wyckoff(df)
-                    if score >= 40: # מסנן רק התבססויות ומעלה
-                        results.append({"Ticker": ticker, "Score": score, "Engine": "Wyckoff", "Verdict": vd})
+                    results.append({"Ticker": ticker, "Score": score, "Engine": "Wyckoff", "Verdict": vd})
                 else:
                     engine = FactorEngine(BacktestConfig())
                     factors = engine.compute(df)
                     cis_score = engine.composite_cis(factors).iloc[-1]
-                    if cis_score >= 65: # מסנן רק איתותי Watch ומעלה
-                        verdict = "Strong Signal" if cis_score >= 75 else "Watch"
-                        results.append({"Ticker": ticker, "Score": cis_score, "Engine": "CIS", "Verdict": verdict})
+                    verdict = "Strong Signal" if cis_score >= 75 else "Watch" if cis_score >= 60 else "Wait"
+                    results.append({"Ticker": ticker, "Score": cis_score, "Engine": "CIS", "Verdict": verdict})
             
             progress_bar.progress((i + 1) / scan_limit)
-            time.sleep(0.1) # מניעת חסימת API
+            time.sleep(0.1) 
             
         status_text.text("✅ הסריקה הושלמה!")
         st.markdown("---")
         
         if results:
-            st.success(f"🔥 נמצאו {len(results)} הזדמנויות איסוף מובהקות:")
             df_results = pd.DataFrame(results).sort_values(by="Score", ascending=False).reset_index(drop=True)
-            st.dataframe(df_results, use_container_width=True)
+            threshold = 40 if "Wyckoff" in engine_choice else 60
+            
+            if not show_all:
+                df_results = df_results[df_results["Score"] >= threshold]
+            
+            if not df_results.empty:
+                st.success(f"📊 מציג {len(df_results)} תוצאות (ציונים ירוקים מעידים על קרבה לאיסוף מוסדי):")
+                st.dataframe(
+                    df_results.style.background_gradient(cmap="Greens", subset=["Score"]),
+                    use_container_width=True
+                )
+            else:
+                st.warning(f"לא נמצאו מניות שעברו את הרף הקריטי ({threshold}). סמן 'הצג הכל' כדי לראות את הציונים הנמוכים.")
         else:
-            st.warning("לא נמצאו מניות העומדות בקריטריוני האיסוף המחמירים כרגע. נסה שוב מאוחר יותר או הרחב את היקף הסריקה.")
+            st.error("הסריקה נכשלה, לא התקבלו נתונים מהשרת.")
 
 
 # ============================================================
