@@ -434,7 +434,7 @@ def screen_backtest():
                     for n in sorted(negatives, key=lambda x: x['impact'])[:4]: st.markdown(f"<div class='factor-box'><span class='miss'>-</span> <span class='factor-title'>{n['factor']}</span></div>", unsafe_allow_html=True)
 
 
-# ============================================================
+# ==========================================
 # חלק 19: מודול 6 - מסך אימון למידת המכונה (ML Trainer)
 # ============================================================
 def screen_ml_trainer():
@@ -465,23 +465,29 @@ def screen_ml_trainer():
                 engine = FactorEngine(BacktestConfig())
                 factors = engine.compute(df)
                 
+                # חישוב תשואה עתידית (10 ימים קדימה)
                 future_return = df["Close"].shift(-10) / df["Close"] - 1
-                target = (future_return > 0.0).astype(int) 
                 
-                valid_idx = ~target.isna()
-                X = factors[valid_idx]
-                y = target[valid_idx]
+                # סינון שורות שאין עליהן מידע עתידי (10 הימים האחרונים)
+                valid_idx = future_return.notna()
+                
+                # לקיחת הנתונים הנקיים בלבד והמרה לפורמט שלם (Integers) שסקייקיט-לרן אוהב
+                X = factors[valid_idx].copy()
+                y = (future_return[valid_idx] > 0.0).astype(int).values
                 
                 with st.spinner("מאמן מודל יער אקראי (Random Forest) על אלפי שורות נתונים..."):
-                    model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-                    model.fit(X, y)
-                    preds = model.predict(X)
-                    acc = accuracy_score(y, preds)
-                    
-                    st.session_state.ml_model = model
-                    st.session_state.ml_acc = acc
-                    st.session_state.use_ml = True
-                    st.success("✅ אימון המודל הסתיים בהצלחה!")
+                    try:
+                        model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+                        model.fit(X, y)
+                        preds = model.predict(X)
+                        acc = accuracy_score(y, preds)
+                        
+                        st.session_state.ml_model = model
+                        st.session_state.ml_acc = acc
+                        st.session_state.use_ml = True
+                        st.success("✅ אימון המודל הסתיים בהצלחה!")
+                    except Exception as e:
+                        st.error(f"שגיאה בתהליך האימון: {e}")
 
     st.markdown("---")
     st.markdown("### ניהול מודל AI פעיל")
@@ -501,6 +507,7 @@ def screen_ml_trainer():
                 st.rerun()
     else:
         st.warning("לא קיים כרגע מודל מאומן בזיכרון. המערכת משתמשת במשקלי הפקטורים הסטטיים המסורתיים.")
+
 
 
 # ============================================================
