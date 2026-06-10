@@ -159,6 +159,132 @@ class FactorEngine:
         f["f04_absorption"] = ((df["Close"] < (df["Low"] + rng * 0.35)) & (lower_shadow > body * 1.5) & (rvol > 1.5)).astype(float)
         resist = df["High"].rolling(20).max().shift(1)
         f["f05_breakout_quality"] = ((df["Close"] > resist) & (df["Close"].rolling(3).mean() > resist.shift(1))).astype(float)
+        f["f06_cis_weight"] = np.clip(1.0 / (std20 / std20.rolling(60).mean().replace(0, np.nan)).replace(0, np.nan), 0.5, 2.0
+    "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
+    "PANW","CRWD","FTNT","ZS","DDOG","SNOW","MDB","NET","PLTR",
+    "UBER","ABNB","COIN","SOFI","UPST",
+    "F","GM","RIVN","NIO",
+    "ONTO","KLAC","LRCX","AMAT","MRVL","SMCI","DELL","HPQ",
+    "DIS","CMCSA","NFLX","RBLX","U","TTWO","EA",
+    "DAL","UAL","AAL","LUV","FDX","UPS","XPO","ODFL",
+    "DKNG","MGM","CZR","RCL","CCL","MAR","HLT",
+]))
+
+
+# ============================================================
+# חלק 3: עיצוב CSS (מראה הממשק)
+# ============================================================
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Hebrew:wght@300;400;600&display=swap');
+html,body,[class*="css"]{font-family:'IBM Plex Sans Hebrew',sans-serif;direction:rtl;}
+h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
+.header-box{border-radius:12px;padding:24px 32px;margin-bottom:28px;color:#e0eaf4;direction:rtl;line-height:1.9;}
+.header-box.wyckoff{background:linear-gradient(135deg,#0f1923,#1a2a3a);border:1px solid #2a4a6a;}
+.header-box.vp     {background:linear-gradient(135deg,#160f23,#251535);border:1px solid #4a2a6a;}
+.header-box.vwap   {background:linear-gradient(135deg,#0f2318,#1a3528);border:1px solid #2a6a4a;}
+.header-box.composite{background:linear-gradient(135deg,#1a1208,#2a1e08);border:1px solid #6a4a1a;}
+.header-box.ml     {background:linear-gradient(135deg,#1c0a20,#2e1236);border:1px solid #7b1fa2;}
+.header-box.scanner{background:linear-gradient(135deg,#0f231f,#1a3a35);border:1px solid #26a69a;}
+.header-box h2{font-family:'IBM Plex Mono',monospace;font-size:1.05rem;margin-bottom:12px;direction:ltr;}
+.header-box.wyckoff   h2{color:#4fc3f7;}
+.header-box.vp        h2{color:#ce93d8;}
+.header-box.vwap      h2{color:#4caf7d;}
+.header-box.composite h2{color:#ffa726;}
+.header-box.ml        h2{color:#e1bee7;}
+.header-box.scanner   h2{color:#80cbc4;}
+.header-box p{color:#b0c8e0;font-size:0.92rem;margin:6px 0;}
+.score-reason-box{background:#0d1b2a;border-left:4px solid #4fc3f7;border-radius:8px;padding:18px 22px;margin:10px 0;direction:rtl;color:#cde3f5;font-size:0.88rem;line-height:1.8;}
+.score-reason-box.positive{border-left-color:#26a69a;}
+.score-reason-box.negative{border-left-color:#ef5350;}
+.criteria-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1e3040;font-size:0.84rem;}
+.hit {color:#26a69a;font-weight:600;}
+.miss{color:#ef5350;}
+.factor-box{background:#111b26; border:1px solid #1e3040; border-radius:8px; padding:12px; margin-bottom:10px;}
+.factor-title{font-family:'IBM Plex Mono',monospace; font-size:0.9rem; font-weight:600;}
+.model-stats{background:#0d1b2a; border:1px solid #2a4a6a; border-radius:8px; padding:16px; margin:12px 0;}
+.model-stats.success{border-left:4px solid #26a69a;}
+.model-stats.warning{border-left:4px solid #ffa726;}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================================
+# חלק 4: ניהול משתני זיכרון (SESSION STATE)
+# ============================================================
+for k,v in [("mode","wyckoff"), ("ml_model", None), ("ml_metadata", None), ("use_ml", False)]:
+    if k not in st.session_state: st.session_state[k] = v
+
+
+# ============================================================
+# חלק 5: תפריט ניווט עליון
+# ============================================================
+st.markdown("# INSTITUTIONAL SCOUT PRO")
+c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
+nav = [("wyckoff","⬛  Wyckoff"),("vp","🔮  Volume Profile"),
+       ("vwap","📐  VWAP Deviation"),("composite","🏆  Composite Score"),
+       ("backtest","📈  Backtest"), ("ml","🧠  ML Trainer"), ("scanner","🔎  Scanner")]
+cols = [c1,c2,c3,c4,c5,c6,c7]
+for col,(mode_key,label) in zip(cols,nav):
+    with col:
+        if st.button(label, use_container_width=True, type="primary" if st.session_state.mode==mode_key else "secondary", key=f"nav_{mode_key}"):
+            st.session_state.mode = mode_key; st.rerun()
+st.markdown("---")
+
+if st.session_state.use_ml and st.session_state.ml_model is not None:
+    metadata = st.session_state.ml_metadata or {}
+    acc = metadata.get("test_acc", 0.0)
+    train_ticker = metadata.get("train_ticker", "???")
+    st.info(f"🤖 **מצב AI מופעל:** מודל מאומן על {train_ticker} (Test Accuracy: {acc*100:.1f}%)")
+
+
+# ============================================================
+# חלק 6: הגדרות מנוע הבק-טסט (BacktestConfig)
+# ============================================================
+@dataclass
+class BacktestConfig:
+    commission: float = 0.001
+    slippage: float = 0.0005
+    initial_capital: float = 100_000.0
+    position_size: float = 0.10
+    hold_days: int = 40
+    min_score: int = 65
+    exit_score: int = 35
+    period: str = "2y"
+    regime_ticker: str = "SPY"
+
+
+# ============================================================
+# חלק 7: פקטורים - אתחול והכנת נתונים בסיסיים
+# ============================================================
+class FactorEngine:
+    def __init__(self, cfg: BacktestConfig): self.cfg = cfg
+    
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        f = pd.DataFrame(index=df.index)
+        tp = (df["High"] + df["Low"] + df["Close"]) / 3
+        body = (df["Close"] - df["Open"]).abs()
+        rng = df["High"] - df["Low"]
+        lower_shadow = df[["Open","Close"]].min(axis=1) - df["Low"]
+        vol_ma20 = df["Volume"].rolling(20).mean()
+        vol_ma5 = df["Volume"].rolling(5).mean()
+        rvol = df["Volume"] / vol_ma20.replace(0, np.nan)
+
+
+# ============================================================
+# חלק 8: חישוב פקטורים 1 עד 12
+# ============================================================
+        price_bins = pd.cut(df["Close"], bins=40, labels=False)
+        f["f01_liquidity_gap"] = ((df.groupby(price_bins)["Volume"].transform("sum") < df.groupby(price_bins)["Volume"].transform("mean") * 0.5).astype(float).rolling(5).mean())
+        sma20 = df["Close"].rolling(20).mean()
+        std20 = df["Close"].rolling(20).std()
+        atr14 = pd.concat([rng, (df["High"] - df["Close"].shift(1)).abs(), (df["Low"] - df["Close"].shift(1)).abs()], axis=1).max(axis=1).rolling(14).mean()
+        f["f02_volatility_squeeze"] = ((((2 * std20) / sma20.replace(0, np.nan)) < ((2 * std20) / sma20.replace(0, np.nan)).rolling(20).mean() * 0.75) & (atr14 < atr14.rolling(20).mean() * 0.75)).astype(float)
+        spy_slope = df.get("spy_close", df["Close"]).rolling(50).mean().diff(10) / df.get("spy_close", df["Close"]).rolling(50).mean().shift(10).replace(0, np.nan)
+        f["f03_regime"] = (spy_slope > 0.01).astype(float) - (spy_slope < -0.01).astype(float)
+        f["f04_absorption"] = ((df["Close"] < (df["Low"] + rng * 0.35)) & (lower_shadow > body * 1.5) & (rvol > 1.5)).astype(float)
+        resist = df["High"].rolling(20).max().shift(1)
+        f["f05_breakout_quality"] = ((df["Close"] > resist) & (df["Close"].rolling(3).mean() > resist.shift(1))).astype(float)
         f["f06_cis_weight"] = np.clip(1.0 / (std20 / std20.rolling(60).mean().replace(0, np.nan)).replace(0, np.nan), 0.5, 2.0)
         obv = (np.sign(df["Close"].diff()) * df["Volume"]).cumsum()
         f["f07_obv_velocity"] = (obv.diff(10) / obv.abs().rolling(10).mean().replace(0, np.nan)).clip(-3, 3)
