@@ -210,13 +210,13 @@ class FactorEngine:
         return f.fillna(0)
 
 
-#  ============================================================
+# ============================================================
 # חלק 11: חישוב הציון המוסדי (CIS) - מתוקן
 # ============================================================
     def composite_cis(self, factors: pd.DataFrame) -> pd.Series:
         if st.session_state.use_ml and st.session_state.ml_model is not None:
             model = st.session_state.ml_model
-            # תיקון: מנסים לחלץ הסתברויות, אם נכשל - משתמשים ב-predict רגיל
+            # ניסיון חילוץ הסתברויות, אם לא מצליח - שימוש בתוצאה בינארית
             try:
                 probs = model.predict_proba(factors)[:, 1]
             except:
