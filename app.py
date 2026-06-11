@@ -106,7 +106,8 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
     acc = metadata.get("train_acc", 0.0)
     train_ticker = metadata.get("train_ticker", "???")
     period = metadata.get("period", "???")
-    st.info(f"🤖 **מצב AI מופעל:** מודל פעיל - {train_ticker} ({period}) | דיוק: {acc*100:.1f}%")
+    slot = metadata.get("slot", "כללי")
+    st.info(f"🤖 **מצב AI מופעל:** מודל פעיל - {slot} (אומן על {train_ticker}, {period}) | דיוק: {acc*100:.1f}%")
 
 
 # ============================================================
@@ -406,6 +407,7 @@ def get_model_summary(model, metadata):
         "train_ticker": metadata.get("train_ticker", "???"),
         "train_acc": metadata.get("train_acc", 0.0),
         "period": metadata.get("period", "???"),
+        "slot": metadata.get("slot", "כללי"),
         "timestamp": metadata.get("timestamp", "???"),
         "top_factors": [{"name": SignalDebugger.LABELS.get(f, f), "importance": imp} for f, imp in top_factors]
     }
@@ -413,10 +415,13 @@ def get_model_summary(model, metadata):
 
 
 # ============================================================
-# חלק 20: מודול 6 - ML Trainer (כולל תאריכים, ארכיון וטעינה אוטומטית)
+# חלק 20: מודול 6 - ML Trainer
 # ============================================================
 def screen_ml_trainer():
-    st.markdown("""<div class="header-box ml"><h2>🧠 MACHINE LEARNING TRAINER & ARCHIVE</h2><p>בחר תקופת אימון, אגור מודלים בארכיון, וייצא את כולם בבת אחת לגיטהאב.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box ml"><h2>🧠 MACHINE LEARNING TRAINER & ARCHIVE</h2><p>בחר לאיזו משבצת אסטרטגית תרצה לשייך את המודל החדש.</p></div>""",unsafe_allow_html=True)
+    
+    # רשימת המשבצות הקבועות
+    MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדדים)", "Commodities (סחורות)"]
     
     st.markdown("### 📥 טעינת מאגר מודלים (אוטומטי או ידני)")
     col1, col2 = st.columns(2)
@@ -430,7 +435,7 @@ def screen_ml_trainer():
                     if encoded_batch and "כאן יודבק" not in encoded_batch:
                         decoded = base64.b64decode(encoded_batch.encode("utf-8"))
                         st.session_state.model_archive = pickle.loads(decoded)
-                        st.success(f"✅ נטענו {len(st.session_state.model_archive)} מודלים מהגיטהאב בהצלחה!")
+                        st.success(f"✅ נטענו מודלים לתוך המשבצות בהצלחה!")
                         st.rerun()
                     else:
                         st.warning("הקובץ בגיטהאב עדיין ריק. תשמור אליו מודלים קודם.")
@@ -450,25 +455,26 @@ def screen_ml_trainer():
 
     with col2:
         if st.session_state.model_archive:
-            st.markdown(f"**📚 בארכיון כרגע:** {len(st.session_state.model_archive)} מודלים.")
-            model_names = list(st.session_state.model_archive.keys())
-            selected_model = st.selectbox("בחר מודל להפעלה (כדי שהמנוע ישתמש בו עכשיו):", model_names)
+            available_slots = list(st.session_state.model_archive.keys())
+            st.markdown(f"**📚 משבצות זמינות כרגע:** {len(available_slots)}/3")
+            selected_model = st.selectbox("בחר מודל להפעלה במנוע הראשי:", available_slots)
             if st.button("✅ הפעל מודל נבחר"):
                 st.session_state.ml_model = st.session_state.model_archive[selected_model]["model"]
                 st.session_state.ml_metadata = st.session_state.model_archive[selected_model]["metadata"]
                 st.session_state.use_ml = True
-                st.success(f"המודל {selected_model} הופעל!")
+                st.success(f"המודל '{selected_model}' הופעל!")
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🚀 אימון מודל חדש והוספה לארכיון")
-    c1, c2, c3 = st.columns([2, 1, 1])
+    st.markdown("### 🚀 אימון מודל חדש")
+    c1, c2, c3, c4 = st.columns([1.5, 1.5, 1, 1])
     with c1: train_ticker = st.text_input("סימול לאימון:", "SPY")
-    with c2: start_date = st.date_input("מתאריך:", value=datetime(2022, 1, 1))
-    with c3: end_date = st.date_input("עד תאריך:", value=datetime.now())
+    with c2: target_slot = st.selectbox("בחר משבצת (ידרוס מודל קודם):", MODEL_SLOTS)
+    with c3: start_date = st.date_input("מתאריך:", value=datetime(2022, 1, 1))
+    with c4: end_date = st.date_input("עד תאריך:", value=datetime.now())
 
-    if st.button("🚀 התחל אימון ושמור בארכיון", use_container_width=True, type="primary"):
-        with st.spinner(f"שואב נתונים ומאמן מודל על {train_ticker}..."):
+    if st.button("🚀 התחל אימון ושמור למשבצת", use_container_width=True, type="primary"):
+        with st.spinner(f"מאמן מודל למשבצת '{target_slot}' על בסיס {train_ticker}..."):
             df = yf.Ticker(train_ticker.upper()).history(start=start_date, end=end_date)
             if df is not None and len(df) >= 100:
                 engine = FactorEngine(BacktestConfig())
@@ -481,21 +487,21 @@ def screen_ml_trainer():
                 model.fit(X, y)
                 
                 acc = model.score(X, y)
-                meta = {"train_ticker": train_ticker.upper(), "train_acc": acc, "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}"}
+                meta = {"train_ticker": train_ticker.upper(), "train_acc": acc, "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}", "slot": target_slot}
                 
-                model_key = f"{train_ticker.upper()}_{start_date.year}_{end_date.year}"
-                st.session_state.model_archive[model_key] = {"model": model, "metadata": meta}
+                # שמירה ישירות למשבצת הקבועה (דורס אם כבר קיים)
+                st.session_state.model_archive[target_slot] = {"model": model, "metadata": meta}
                 
                 st.session_state.ml_model = model; st.session_state.ml_metadata = meta; st.session_state.use_ml = True
-                st.success(f"✅ המודל למד בדיוק של {acc*100:.1f}% והתווסף לארכיון כ- {model_key}!")
+                st.success(f"✅ המודל למד בדיוק של {acc*100:.1f}% ונשמר בהצלחה במשבצת: {target_slot}")
             else: st.error("❌ לא נמצאו מספיק נתונים בתקופה שנבחרה.")
 
     st.markdown("---")
-    st.markdown("### 📤 פעולות סיום אימון (לגיטהאב וליועץ)")
+    st.markdown("### 📤 פעולות סיום אימון")
     ca, cb = st.columns(2)
     with ca:
         if st.session_state.model_archive:
-            if st.button("📦 ארוז וייצא את כל הארכיון ל-Base64", type="primary"):
+            if st.button("📦 ארוז וייצא לגיטהאב", type="primary"):
                 archive_export = {}
                 for k, v in st.session_state.model_archive.items(): archive_export[k] = {"model": pickle.dumps(v["model"]), "metadata": v["metadata"]}
                 encoded_all = base64.b64encode(pickle.dumps(archive_export)).decode("utf-8")
@@ -504,14 +510,15 @@ def screen_ml_trainer():
     with cb:
         if st.session_state.model_archive:
             if st.button("🤖 הפק דוח ליועץ ה-AI"):
-                report = "### דוח התקדמות למידה עבור היועץ (AI)\n\n"
+                report = "### דוח התקדמות למידה (מעודכן לפי משבצות)\n\n"
                 for name, data in st.session_state.model_archive.items():
                     summ = get_model_summary(data['model'], data['metadata'])
-                    report += f"- **מודל:** `{name}`\n"
+                    report += f"- **משבצת:** `{name}`\n"
+                    report += f"  - **טיקר אימון:** {summ['train_ticker']}\n"
                     report += f"  - **תקופה:** {summ['period']}\n"
                     report += f"  - **דיוק:** {summ['train_acc']*100:.1f}%\n"
                     report += f"  - **פקטורים מובילים:** {', '.join([f['name'] for f in summ['top_factors'][:3]])}\n\n"
-                report += "--- \n*העתק את כל הטקסט הזה והדבק אותו בצ'אט עם ה-AI.*"
+                report += "--- \n*העתק והדבק בצ'אט עם ה-AI.*"
                 st.text_area("📋 דוח להעתקה:", value=report, height=150)
 
 
