@@ -501,11 +501,21 @@ def screen_ml_trainer():
     ca, cb = st.columns(2)
     with ca:
         if st.session_state.model_archive:
-            if st.button("📦 ארוז וייצא לגיטהאב", type="primary"):
-                archive_export = {}
-                for k, v in st.session_state.model_archive.items(): archive_export[k] = {"model": pickle.dumps(v["model"]), "metadata": v["metadata"]}
-                encoded_all = base64.b64encode(pickle.dumps(archive_export)).decode("utf-8")
-                st.text_area("✂️ קוד מאגר שלם (העתק ל-batch_archive_v1.txt בגיטהאב):", value=encoded_all, height=150)
+            st.markdown("### 📦 ייצוא לגיטהאב")
+            archive_export = {}
+            for k, v in st.session_state.model_archive.items(): 
+                archive_export[k] = {"model": pickle.dumps(v["model"]), "metadata": v["metadata"]}
+            encoded_all = base64.b64encode(pickle.dumps(archive_export)).decode("utf-8")
+            
+            st.download_button(
+                label="💾 הורד קובץ ארכיון (להעלאה לגיטהאב)",
+                data=encoded_all,
+                file_name="batch_archive_v1.txt",
+                mime="text/plain",
+                use_container_width=True,
+                type="primary"
+            )
+            st.markdown("*לחץ על הכפתור כדי להוריד את הקובץ, ואז פשוט תחליף אותו בגיטהאב (Upload files).*")
                 
     with cb:
         if st.session_state.model_archive:
