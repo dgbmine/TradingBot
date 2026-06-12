@@ -21,7 +21,7 @@ st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
 
 # ============================================================
-# חלק 2: רשימת המניות לסריקה (SCAN UNIVERSE)
+# חלק 2: רשימת המניות וחלוקה לקבוצות סקטוריאליות (SCAN UNIVERSE)
 # ============================================================
 SCAN_UNIVERSE = list(dict.fromkeys([
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","JPM","JNJ",
@@ -38,67 +38,212 @@ SCAN_UNIVERSE = list(dict.fromkeys([
     "UBER","ABNB","COIN","SOFI","UPST",
     "F","GM","RIVN","NIO",
     "ONTO","KLAC","LRCX","AMAT","MRVL","SMCI","DELL","HPQ",
-    "DIS","CMCSA","NFLX","RBLX","U","TTWO","EA",
+    "DIS","CMCSA","RBLX","U","TTWO","EA",
     "DAL","UAL","AAL","LUV","FDX","UPS","XPO","ODFL",
     "DKNG","MGM","CZR","RCL","CCL","MAR","HLT"
 ]))
 
+SECTOR_MAP = {
+    "הכול (כל השוק האמריקאי)": SCAN_UNIVERSE,
+    "צמיחה וטכנולוגיה (Growth - NVDA, AMD, PLTR, AAPL...)": [
+        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
+        "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
+        "PANW","CRWD","FTNT","ZS","DDOG","SNOW","MDB","NET","PLTR",
+        "UBER","ABNB","COIN","SOFI","UPST","ONTO","KLAC","LRCX",
+        "AMAT","MRVL","SMCI","DELL","HPQ","RBLX","U","TTWO","EA"
+    ],
+    "ערך ומדדים (Value/Index - JPM, BRK-B, WMT, COST...)": [
+        "BRK-B","JPM","JNJ","V","UNH","PG","MA","HD","MRK","ABBV",
+        "PEP","KO","COST","WMT","LLY","TMO","MCD","ACN","BAC","ABT",
+        "DHR","RTX","HON","NKE","AMGN","PM","IBM","SBUX","GS","CAT",
+        "BA","GE","SPGI","AXP","BLK","DE","ISRG","MDLZ","GILD",
+        "REGN","SYK","ZTS","MMC","AON","TJX","SCHW","CB","USB","WFC",
+        "C","MS","CVS","CI","AMT","PLD","CCI","EQIX","SPG","O",
+        "WELL","DLR","DIS","CMCSA","DAL","UAL","AAL","LUV","FDX",
+        "UPS","XPO","ODFL","DKNG","MGM","CZR","RCL","CCL","MAR","HLT"
+    ],
+    "סחורות ואנרגיה (Commodities - XOM, CVX, COP, GLD...)": [
+        "XOM","CVX","SLB","EOG","OXY","COP","PSX","VLO",
+        "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG"
+    ]
+}
+
 
 # ============================================================
-# חלק 3: עיצוב CSS (מראה הממשק)
+# חלק 3: עיצוב CSS מתקדם ומותאם ל-RTL
 # ============================================================
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Hebrew:wght@300;400;600&display=swap');
-html,body,[class*="css"]{font-family:'IBM Plex Sans Hebrew',sans-serif;direction:rtl;}
-h1,h2,h3,h4{font-family:'IBM Plex Mono',monospace;direction:ltr;}
-.header-box{border-radius:12px;padding:24px 32px;margin-bottom:28px;color:#e0eaf4;direction:rtl;line-height:1.9;}
-.header-box.wyckoff{background:linear-gradient(135deg,#0f1923,#1a2a3a);border:1px solid #2a4a6a;}
-.header-box.vp     {background:linear-gradient(135deg,#160f23,#251535);border:1px solid #4a2a6a;}
-.header-box.vwap   {background:linear-gradient(135deg,#0f2318,#1a3528);border:1px solid #2a6a4a;}
-.header-box.composite{background:linear-gradient(135deg,#1a1208,#2a1e08);border:1px solid #6a4a1a;}
-.header-box.ml     {background:linear-gradient(135deg,#1c0a20,#2e1236);border:1px solid #7b1fa2;}
-.header-box.scanner{background:linear-gradient(135deg,#0f231f,#1a3a35);border:1px solid #26a69a;}
-.header-box h2{font-family:'IBM Plex Mono',monospace;font-size:1.05rem;margin-bottom:12px;direction:ltr;}
-.header-box.wyckoff   h2{color:#4fc3f7;}
-.header-box.vp        h2{color:#ce93d8;}
-.header-box.vwap      h2{color:#4caf7d;}
-.header-box.composite h2{color:#ffa726;}
-.header-box.ml        h2{color:#e1bee7;}
-.header-box.scanner   h2{color:#80cbc4;}
-.header-box p{color:#b0c8e0;font-size:0.92rem;margin:6px 0;}
-.score-reason-box{background:#0d1b2a;border-left:4px solid #4fc3f7;border-radius:8px;padding:18px 22px;margin:10px 0;direction:rtl;color:#cde3f5;font-size:0.88rem;line-height:1.8;}
-.score-reason-box.positive{border-left-color:#26a69a;}
-.score-reason-box.negative{border-left-color:#ef5350;}
-.criteria-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1e3040;font-size:0.84rem;}
-.hit {color:#26a69a;font-weight:600;}
-.miss{color:#ef5350;}
-.factor-box{background:#111b26; border:1px solid #1e3040; border-radius:8px; padding:12px; margin-bottom:10px;}
-.factor-title{font-family:'IBM Plex Mono',monospace; font-size:0.9rem; font-weight:600;}
+html, body, [class*="css"] {
+    font-family: 'IBM Plex Sans Hebrew', sans-serif;
+    direction: rtl;
+    text-align: right;
+    box-sizing: border-box;
+}
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'IBM Plex Sans Hebrew', sans-serif;
+    direction: rtl;
+}
+.mono-text {
+    font-family: 'IBM Plex Mono', monospace;
+    direction: ltr;
+    text-align: left;
+}
+.header-box {
+    border-radius: 12px;
+    padding: 24px 32px;
+    margin-bottom: 28px;
+    color: #e0eaf4;
+    line-height: 1.9;
+}
+.header-box.wyckoff   { background: linear-gradient(135deg, #0f1923, #1a2a3a); border: 1px solid #2a4a6a; }
+.header-box.vp         { background: linear-gradient(135deg, #160f23, #251535); border: 1px solid #4a2a6a; }
+.header-box.vwap       { background: linear-gradient(135deg, #0f2318, #1a3528); border: 1px solid #2a6a4a; }
+.header-box.composite  { background: linear-gradient(135deg, #1a1208, #2a1e08); border: 1px solid #6a4a1a; }
+.header-box.ml         { background: linear-gradient(135deg, #1c0a20, #2e1236); border: 1px solid #7b1fa2; }
+.header-box.scanner    { background: linear-gradient(135deg, #0f231f, #1a3a35); border: 1px solid #26a69a; }
+
+.widget-panel-ai {
+    background: #111922;
+    border: 1px solid #2d3d4f;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 24px;
+}
+.factor-box {
+    background: #111b26; 
+    border: 1px solid #1e3040; 
+    border-radius: 8px; 
+    padding: 12px; 
+    margin-bottom: 10px;
+}
+.factor-title {
+    font-family: 'IBM Plex Mono', monospace; 
+    font-size: 0.9rem; 
+    font-weight: 600;
+}
+.hit { color: #26a69a; font-weight: 600; }
+.miss { color: #ef5350; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ============================================================
-# חלק 4: ניהול משתני זיכרון (SESSION STATE)
+# חלק 4: ניהול משתני זיכרון גלובליים (SESSION STATE)
 # ============================================================
-for k,v in [("mode","wyckoff"), ("ml_model", None), ("ml_metadata", None), ("use_ml", False), ("model_archive", {})]:
-    if k not in st.session_state: st.session_state[k] = v
+for k, v in [("mode", "wyckoff"), ("ml_model", None), ("ml_metadata", None), ("use_ml", False), ("model_archive", {})]:
+    if k not in st.session_state: 
+        st.session_state[k] = v
 
 
 # ============================================================
-# חלק 5: תפריט ניווט עליון
+# חלק 5: פונקציות תשתית לפענוח וטעינת מודלים (מניעת באגים)
+# ============================================================
+def clean_and_unpack_archive(archive_dict):
+    """מוודא שכל המודלים בארכיון עברו דה-סריאליזציה מלאה מאובייקט בייטס"""
+    unpacked = {}
+    for slot_name, data in archive_dict.items():
+        model_obj = data["model"]
+        if isinstance(model_obj, bytes):
+            try:
+                model_obj = pickle.loads(model_obj)
+            except:
+                pass
+        unpacked[slot_name] = {"model": model_obj, "metadata": data["metadata"]}
+    return unpacked
+
+def trigger_auto_load_from_file():
+    """טוען אוטומטית את קובץ הארכיון מתיקיית המודלים המשותפת"""
+    file_path = "models/batch_archive_v1.txt"
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r") as f:
+                encoded_batch = f.read().strip()
+            if encoded_batch and "כאן יודבק" not in encoded_batch and len(encoded_batch) > 50:
+                decoded = base64.b64decode(encoded_batch.encode("utf-8"))
+                raw_archive = pickle.loads(decoded)
+                st.session_state.model_archive = clean_and_unpack_archive(raw_archive)
+                return True
+        except:
+            pass
+    return False
+
+
+# ============================================================
+# חלק 6: רכיב ממשק משותף - בורר ה-AI החכם (גלובלי)
+# ============================================================
+def render_active_ai_selector_widget(screen_identifier):
+    """מציג פאנל שליטה חכם ואינטראקטיבי לבחירה והפעלת מודלים ישירות מכל מסך"""
+    trigger_auto_load_from_file()
+    
+    st.markdown("<div class='widget-panel-ai'>", unsafe_allow_html=True)
+    st.markdown("### 🧠 הגדרות מנוע החלטה AI חכם")
+    
+    col_a, col_b, col_c = st.columns([2, 1.5, 1])
+    
+    with col_a:
+        if st.session_state.model_archive:
+            slots_list = list(st.session_state.model_archive.keys())
+            selected_slot = st.selectbox(
+                "בחר מודל מוסדי פעיל:", 
+                slots_list, 
+                key=f"selector_slot_{screen_identifier}"
+            )
+            
+            if st.button("⚡ טען והפעל מודל נבחר", key=f"activate_btn_{screen_identifier}", use_container_width=True):
+                target_data = st.session_state.model_archive[selected_slot]
+                model_instance = target_data["model"]
+                if isinstance(model_instance, bytes):
+                    model_instance = pickle.loads(model_instance)
+                
+                st.session_state.ml_model = model_instance
+                st.session_state.ml_metadata = target_data["metadata"]
+                st.session_state.use_ml = True
+                st.success(f"המודל המשויך למשבצת '{selected_slot}' הופעל בהצלחה!")
+                st.rerun()
+        else:
+            st.info("לא נמצאו מודלים טעונים בזיכרון. אנא עבור ל-ML Trainer לאימון או טעינה.")
+            
+    with col_b:
+        st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 סנכרון מהיר מגיטהאב", key=f"sync_git_{screen_identifier}", use_container_width=True):
+            if trigger_auto_load_from_file():
+                st.success("✅ סנכרון הקובץ מגיטהאב הושלם בהצלחה!")
+                st.rerun()
+            else:
+                st.error("קובץ המאגר ריק או לא נמצא בנתיב היעד: models/batch_archive_v1.txt")
+                
+    with col_c:
+        st.markdown("<div style='margin-top:32px;'></div>", unsafe_allow_html=True)
+        ai_toggle = st.checkbox(
+            "הפעל שימוש ב-AI בחישובים", 
+            value=st.session_state.use_ml, 
+            key=f"checkbox_ai_{screen_identifier}"
+        )
+        if ai_toggle != st.session_state.use_ml:
+            st.session_state.use_ml = ai_toggle
+            st.rerun()
+            
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ============================================================
+# חלק 7: תפריט ניווט עליון
 # ============================================================
 st.markdown("# INSTITUTIONAL SCOUT PRO")
 c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
-nav = [("wyckoff","⬛  Wyckoff"),("vp","🔮  Volume Profile"),
-       ("vwap","📐  VWAP Deviation"),("composite","🏆  Composite Score"),
-       ("backtest","📈  Backtest"), ("ml","🧠  ML Trainer"), ("scanner","🔎  Scanner")]
+nav = [
+    ("wyckoff","⬛  Wyckoff"),("vp","🔮  Volume Profile"),
+    ("vwap","📐  VWAP Deviation"),("composite","🏆  Composite Score"),
+    ("backtest","📈  Backtest"), ("ml","🧠  ML Trainer"), ("scanner","🔎  Scanner")
+]
 cols = [c1,c2,c3,c4,c5,c6,c7]
-for col,(mode_key,label) in zip(cols,nav):
+for col, (mode_key, label) in zip(cols, nav):
     with col:
         if st.button(label, use_container_width=True, type="primary" if st.session_state.mode==mode_key else "secondary", key=f"nav_{mode_key}"):
-            st.session_state.mode = mode_key; st.rerun()
+            st.session_state.mode = mode_key
+            st.rerun()
 st.markdown("---")
 
 if st.session_state.use_ml and st.session_state.ml_model is not None:
@@ -107,11 +252,11 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
     train_ticker = metadata.get("train_ticker", "???")
     period = metadata.get("period", "???")
     slot = metadata.get("slot", "כללי")
-    st.info(f"🤖 **מצב AI מופעל:** מודל פעיל - {slot} (אומן על {train_ticker}, {period}) | דיוק: {acc*100:.1f}%")
+    st.info(f"🤖 **מצב AI מופעל באופן גלובלי:** מודל פעיל - {slot} (אומן על {train_ticker}, {period}) | דיוק פנימי: {acc*100:.1f}%")
 
 
 # ============================================================
-# חלק 6: הגדרות מנוע הבק-טסט
+# חלק 8: הגדרות מנוע הבק-טסט והפקטורים
 # ============================================================
 @dataclass
 class BacktestConfig:
@@ -125,12 +270,10 @@ class BacktestConfig:
     period: str = "2y"
     regime_ticker: str = "SPY"
 
-
-# ============================================================
-# חלק 7-10: חישוב פקטורים
-# ============================================================
 class FactorEngine:
-    def __init__(self, cfg: BacktestConfig): self.cfg = cfg
+    def __init__(self, cfg: BacktestConfig): 
+        self.cfg = cfg
+        
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         f = pd.DataFrame(index=df.index)
         tp = (df["High"] + df["Low"] + df["Close"]) / 3
@@ -189,16 +332,15 @@ class FactorEngine:
         f["f32_accum_type"] = (dist_ath > 0.25).astype(float) * 1.0 + ((dist_ath < 0.15) & (dist_ath > 0.05)).astype(float) * 0.6
         f["f33_liq_exhaust"] = ((vol_ma5 < vol_ma5.shift(10)) & (df["Close"].pct_change(5).abs() < 0.02)).astype(float)
         f["f34_corr_stress"] = df["Close"].pct_change().rolling(20).corr(df.get("spy_close", df["Close"]).pct_change()).clip(-1, 1)
+        f["f34_corr_stress"] = f["f34_corr_stress"].fillna(0)
         f["f35_struct_break"] = (df["Close"] > df["High"].rolling(20).max().shift(1)).astype(float) - (df["Close"] < df["Low"].rolling(20).min().shift(1)).astype(float)
         return f.fillna(0)
 
-
-# ============================================================
-# חלק 11-12: Composite CIS & Debugger
-# ============================================================
     def composite_cis(self, factors: pd.DataFrame, df: pd.DataFrame = None) -> pd.Series:
         if st.session_state.use_ml and st.session_state.ml_model is not None:
             model = st.session_state.ml_model
+            if isinstance(model, bytes):
+                model = pickle.loads(model)
             try:
                 probs = model.predict_proba(factors)[:, 1]
             except:
@@ -226,39 +368,69 @@ class FactorEngine:
                 if col in factors.columns and col != "f11_kill_switch":
                     score += factors[col].clip(-1, 1) * weight
             score = (score / tot * 100 + 50).clip(0, 100)
-        if "f11_kill_switch" in factors.columns: score = score * (1 - factors["f11_kill_switch"])
+        if "f11_kill_switch" in factors.columns: 
+            score = score * (1 - factors["f11_kill_switch"])
         return score.round(1)
 
 class SignalDebugger:
-    LABELS = {"f01_liquidity_gap": "Liquidity Gap (LVN)","f02_volatility_squeeze": "Volatility Squeeze","f03_regime": "Market Regime","f04_absorption": "Absorption Signature","f05_breakout_quality": "Breakout Quality","f06_cis_weight": "Dynamic Weights","f07_obv_velocity": "OBV Accumulation Velocity","f08_fft": "Failure to Follow Through","f09_dependency": "Signal Dependency","f10_temporal_seq": "Temporal Sequencing","f12_distribution": "Distribution Mirror","f13_confidence_decay": "Confidence Decay","f14_inst_intent": "Institutional Intent","f15_mtf": "MTF Confirmation","f16_anchor_conflict": "Anchor Conflict","f17_vol_cluster": "Vol Cluster Expansion","f18_sector_breadth": "Sector Breadth","f19_order_flow": "Order Flow Imbalance","f20_liquidity_sweep": "Liquidity Sweep","f21_break_auth": "Range Break Auth","f22_sr_strength": "S/R Strength","f23_gap_structure": "Gap Structure","f24_event_shock": "Event Shock Normalization","f25_rvol_anomaly": "Relative Volume Anomaly","f26_accept_reject": "Price Accept vs Reject","f27_vol_regime": "Vol Regime Transition","f28_inst_part": "Institutional Participation","f29_trend_integrity": "Trend Integrity","f30_mean_rev": "Mean Reversion Pressure","f31_bear_trap": "False Support Breakdown","f32_accum_type": "Accumulation Differentiation","f33_liq_exhaust": "Liquidity Exhaustion","f34_corr_stress": "Correlation Stress","f35_struct_break": "Structural Break"}
+    LABELS = {
+        "f01_liquidity_gap": "Liquidity Gap (LVN)", "f02_volatility_squeeze": "Volatility Squeeze",
+        "f03_regime": "Market Regime", "f04_absorption": "Absorption Signature",
+        "f05_breakout_quality": "Breakout Quality", "f06_cis_weight": "Dynamic Weights",
+        "f07_obv_velocity": "OBV Accumulation Velocity", "f08_fft": "Failure to Follow Through",
+        "f09_dependency": "Signal Dependency", "f10_temporal_seq": "Temporal Sequencing",
+        "f12_distribution": "Distribution Mirror", "f13_confidence_decay": "Confidence Decay",
+        "f14_inst_intent": "Institutional Intent", "f15_mtf": "MTF Confirmation",
+        "f16_anchor_conflict": "Anchor Conflict", "f17_vol_cluster": "Vol Cluster Expansion",
+        "f18_sector_breadth": "Sector Breadth", "f19_order_flow": "Order Flow Imbalance",
+        "f20_liquidity_sweep": "Liquidity Sweep", "f21_break_auth": "Range Break Auth",
+        "f22_sr_strength": "S/R Strength", "f23_gap_structure": "Gap Structure",
+        "f24_event_shock": "Event Shock Normalization", "f25_rvol_anomaly": "Relative Volume Anomaly",
+        "f26_accept_reject": "Price Accept vs Reject", "f27_vol_regime": "Vol Regime Transition",
+        "f28_inst_part": "Institutional Participation", "f29_trend_integrity": "Trend Integrity",
+        "f30_mean_rev": "Mean Reversion Pressure", "f31_bear_trap": "False Support Breakdown",
+        "f32_accum_type": "Accumulation Differentiation", "f33_liq_exhaust": "Liquidity Exhaustion",
+        "f34_corr_stress": "Correlation Stress", "f35_struct_break": "Structural Break"
+    }
     def audit(self, factors: pd.DataFrame, cis: pd.Series) -> list:
         row = factors.iloc[-1]; res = []
         if st.session_state.use_ml and st.session_state.ml_model is not None:
-            importances = st.session_state.ml_model.feature_importances_
+            model = st.session_state.ml_model
+            if isinstance(model, bytes):
+                model = pickle.loads(model)
+            importances = model.feature_importances_
             for i, col in enumerate(factors.columns):
                 if col in self.LABELS and importances[i] > 0.01:
                     direction = 1 if row[col] > 0 else -1
                     res.append({"factor": self.LABELS[col], "impact": importances[i] * direction * 100})
         else:
             for col, val in row.items():
-                if col in self.LABELS and val != 0: res.append({"factor": self.LABELS[col], "impact": val})
+                if col in self.LABELS and val != 0: 
+                    res.append({"factor": self.LABELS[col], "impact": val})
         return sorted(res, key=lambda x: x["impact"], reverse=True)
 
 
 # ============================================================
-# חלק 13-14: Backtest Engine
+# חלק 9: מנוע סימולציית העבר (BACKTEST ENGINE)
 # ============================================================
 class BacktestEngine:
     def __init__(self):
-        self.cfg = BacktestConfig(); self.factors = FactorEngine(self.cfg); self.debugger = SignalDebugger()
+        self.cfg = BacktestConfig()
+        self.factors = FactorEngine(self.cfg)
+        self.debugger = SignalDebugger()
+        
     def run(self, ticker: str):
         try:
             df = yf.Ticker(ticker).history(period=self.cfg.period)
-            if df is None or len(df) < 100: return {"error": "Data missing"}
+            if df is None or len(df) < 50: 
+                return {"error": "נתוני שוק לא זמינים או חסרים עבור הטיקר המבוקש."}
             df.index = pd.to_datetime(df.index).tz_localize(None)
-            try: df["spy_close"] = yf.Ticker(self.cfg.regime_ticker).history(period=self.cfg.period)["Close"].reindex(df.index).ffill()
-            except: df["spy_close"] = df["Close"]
-            f = self.factors.compute(df); cis = self.factors.composite_cis(f, df)
+            try: 
+                df["spy_close"] = yf.Ticker(self.cfg.regime_ticker).history(period=self.cfg.period)["Close"].reindex(df.index).ffill()
+            except: 
+                df["spy_close"] = df["Close"]
+            f = self.factors.compute(df)
+            cis = self.factors.composite_cis(f, df)
             entry = (cis.shift(1) < self.cfg.min_score) & (cis >= self.cfg.min_score)
             exit_ = (cis < self.cfg.exit_score)
             closes = df["Close"].values; dates = df.index; trades = []; in_trade = False; entry_px = 0; hold = 0
@@ -268,73 +440,87 @@ class BacktestEngine:
                 elif in_trade:
                     hold += 1
                     if exit_.iloc[i] or hold >= self.cfg.hold_days:
-                        ext_px = closes[i] * (1 - self.cfg.commission); trades.append({"entry_date": ent_d, "exit_date": dates[i], "return": (ext_px - entry_px)/entry_px}); in_trade = False
+                        ext_px = closes[i] * (1 - self.cfg.commission)
+                        trades.append({"entry_date": ent_d, "exit_date": dates[i], "return": (ext_px - entry_px)/entry_px})
+                        in_trade = False
             trades_df = pd.DataFrame(trades); equity = [self.cfg.initial_capital]
             if not trades_df.empty:
-                for r in trades_df["return"]: equity.append(equity[-1] * (1 + r))
+                for r in trades_df["return"]: 
+                    equity.append(equity[-1] * (1 + r))
             wr = (trades_df["return"] > 0).mean() if not trades_df.empty else 0
             ret = (equity[-1] - self.cfg.initial_capital) / self.cfg.initial_capital
-            equity_arr = np.array(equity); peak = np.maximum.accumulate(equity_arr); drawdown = (equity_arr - peak) / peak; max_dd = drawdown.min() if len(drawdown) > 0 else 0
+            equity_arr = np.array(equity); peak = np.maximum.accumulate(equity_arr)
+            drawdown = (equity_arr - peak) / peak; max_dd = drawdown.min() if len(drawdown) > 0 else 0
             return {"df": df, "cis": cis, "audit": self.debugger.audit(f, cis), "trades": len(trades_df), "wr": wr, "ret": ret, "max_dd": max_dd}
-        except Exception as e: return {"error": str(e)}
+        except Exception as e: 
+            return {"error": str(e)}
 
 
 # ============================================================
-# חלק 15-16: Wyckoff 3.0 Engine & Charts
+# חלק 10: מודול WYCKOFF STRUCTURAL ENGINE
 # ============================================================
 @st.cache_data(ttl=3600)
 def get_data(ticker, period="1y"):
-    try: df = yf.Ticker(ticker).history(period=period)
-    except: return None
-    if df is None or len(df) < 100: return None
+    try: 
+        df = yf.Ticker(ticker).history(period=period)
+    except: 
+        return None
+    if df is None or len(df) < 40: 
+        return None
     df["BODY"] = abs(df["Close"] - df["Open"])
     df["LOWER_SHADOW"] = df[["Open","Close"]].min(axis=1) - df["Low"]
     df["SPREAD"] = df["High"] - df["Low"]
-    df["VOL_YEAR_MEAN"] = df["Volume"].rolling(252, min_periods=50).mean()
-    df["SPREAD_YEAR_MEAN"] = df["SPREAD"].rolling(252, min_periods=50).mean()
+    df["VOL_YEAR_MEAN"] = df["Volume"].rolling(252, min_periods=20).mean()
+    df["SPREAD_YEAR_MEAN"] = df["SPREAD"].rolling(252, min_periods=20).mean()
     return df
 
 def render_gauge(score, verdict, verdict_color):
     bc = "#26a69a" if score>=75 else "#ffa726" if score>=45 else "#ef5350"
-    fig = go.Figure(go.Indicator(mode="gauge+number", value=score, title={'text':f"<b>Wyckoff Score</b><br><span style='font-size:0.82em;color:{verdict_color}'>{verdict}</span>"}, gauge={'axis':{'range':[0,100]}, 'bar':{'color':bc}, 'bgcolor':"#0d1b2a"}, number={'font':{'color':bc}}))
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number", value=score, 
+        title={'text':f"<b>Wyckoff Score</b><br><span style='font-size:0.82em;color:{verdict_color}'>{verdict}</span>"}, 
+        gauge={'axis':{'range':[0,100]}, 'bar':{'color':bc}, 'bgcolor':"#0d1b2a"}, number={'font':{'color':bc}}
+    ))
     fig.update_layout(height=300, margin=dict(t=80,b=10,l=20,r=20), paper_bgcolor="#0a1520", font_color="#e0eaf4")
     return fig
 
-def _render_alerts(alerts):
-    for alert in alerts:
-        color = "#ef5350" if "התנגדות" in alert or "לא הצדיקה" in alert else "#26a69a"
-        st.markdown(f"<div style='background:#111b26; border-right:4px solid {color}; padding:10px; margin-bottom:10px; border-radius:5px;'>{alert}</div>", unsafe_allow_html=True)
-
 def analyze_wyckoff(df):
-    score = 0; alerts = []; current_phase = "לא בתהליך איסוף"; phase_explanation = "המניה לא הראתה סימני בלימה ב-90 הימים האחרונים."
+    score = 0; alerts = []; current_phase = "לא בתהליך איסוף"; phase_explanation = "המניה לא הראתה סימני בלימה משמעותיים ב-90 הימים האחרונים."
     last_30 = df.iloc[-30:]
     for i in range(len(last_30)):
         day = last_30.iloc[i]; days_ago = len(last_30) - i - 1
-        if day["Volume"] > day["VOL_YEAR_MEAN"] * 2:
+        if day["Volume"] > day["VOL_YEAR_MEAN"] * 1.8:
             spread_ratio = day["SPREAD"] / day["SPREAD_YEAR_MEAN"]
             if spread_ratio < 1.2:
                 direction = "ירידות" if day["Close"] < day["Open"] else "עליות"
-                alerts.append(f"⚠️ שים לב: לפני {days_ago} ימי מסחר היה ווליום חריג ב{direction}, אבל תנועת המחיר לא הצדיקה אותו (התנגדות או ספיגה).")
-            elif spread_ratio >= 1.5:
-                alerts.append(f"✅ שים לב: לפני {days_ago} ימי מסחר היה ווליום חריג שתורגם לתנועת מחיר רחבה. מהלך מוסדי מובהק.")
+                alerts.append(f"⚠️ שים לב: לפני {days_ago} ימי מסחר נצפה מחזור חריג ב{direction}, אך תנועת המחיר נבלמה (ספיגת סחורה מוסדית / התנגדות).")
+            elif spread_ratio >= 1.4:
+                alerts.append(f"✅ שים לב: לפני {days_ago} ימי מסחר זוהה מחזור חריג שתורגם ישירות למהלך מחיר רחב. השתתפות מוסדית ברורה.")
     last_90 = df.iloc[-90:]
-    sc_candidates = last_90[(last_90["Volume"] > last_90["VOL_YEAR_MEAN"] * 2.5) & (last_90["Close"] < last_90["Open"])]
+    sc_candidates = last_90[(last_90["Volume"] > last_90["VOL_YEAR_MEAN"] * 2.2) & (last_90["Close"] < last_90["Open"])]
     if not sc_candidates.empty:
         sc_idx = sc_candidates.index[0]; sc_low = df.loc[sc_idx, "Low"]; post_sc = df.loc[sc_idx:]; days_since_sc = len(post_sc)
         if days_since_sc < 7:
-            current_phase = "Phase A (Stopping the Trend)"; phase_explanation = f"המניה חוותה בלימה לפני {days_since_sc} ימים. אנחנו בהתחלה."; score += 30
+            current_phase = "Phase A (Stopping the Trend)"
+            phase_explanation = f"המניה חוותה בלימה מוסדית אגרסיבית לפני {days_since_sc} ימים. התחלת תהליך בניית תחתית."
+            score += 35
         else:
             spring_candidates = post_sc[(post_sc["Low"] < sc_low) & (post_sc["Close"] > sc_low)]
             if not spring_candidates.empty and (len(post_sc) - post_sc.index.get_loc(spring_candidates.index[-1])) <= 15:
                 days_since_spring = len(post_sc) - post_sc.index.get_loc(spring_candidates.index[-1]) - 1
-                current_phase = "Phase C (Spring / Shakeout)"; phase_explanation = f"לפני {days_since_spring} ימים המניה עברה שייקאוט ושאבה נזילות."; score += 85
+                current_phase = "Phase C (Spring / Shakeout)"
+                phase_explanation = f"לפני {days_since_spring} ימים המניה ביצעה ניעור של קצוות נזילות ושאבה פקודות סטופ תחת התחתית ההיסטורית."
+                score += 85
             else:
-                current_phase = "Phase B (Building a Cause)"; phase_explanation = f"המניה בונה סיבה בדשדוש כבר {days_since_sc} ימי מסחר."; score += 55
+                current_phase = "Phase B (Building a Cause)"
+                phase_explanation = f"המניה בונה סיבה בתוך טווח הדשדוש הנוכחי מזה {days_since_sc} ימי מסחר רצופים."
+                score += 60
     vd = current_phase; vc = "#26a69a" if score >= 75 else "#ffa726" if score >= 40 else "#ef5350"
     return score, current_phase, phase_explanation, alerts, vd, vc
 
 def render_wyckoff_chart(df):
-    dc = df.iloc[-120:].copy(); fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.04)
+    dc = df.iloc[-120:].copy()
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.04)
     fig.add_trace(go.Candlestick(x=dc.index, open=dc["Open"], high=dc["High"], low=dc["Low"], close=dc["Close"], name="Price"), row=1, col=1)
     colors = ['#ef5350' if row['Open'] > row['Close'] else '#26a69a' for _, row in dc.iterrows()]
     fig.add_trace(go.Bar(x=dc.index, y=dc["Volume"], name="Volume", marker_color=colors), row=2, col=1)
@@ -343,140 +529,177 @@ def render_wyckoff_chart(df):
     return fig
 
 def screen_wyckoff():
-    st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF 3.0 - PURE PRICE & VOLUME</h2><p>מנוע דינמי המבוסס אך ורק על מאמץ מול תוצאה (VSA) וזיהוי פאזות בזמן אמת, ללא תלות בממוצעי מחיר.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF 3.0 STRUCTURAL ENGINE</h2><p>מערכת ניתוח מוסדית המבוססת על חוקי מאמץ מול תוצאה (VSA) וזיהוי שלבי איסוף/פיזור בזמן אמת, בשילוב אינטגרציית מודלים חכמים.</p></div>""",unsafe_allow_html=True)
+    
+    # הוספת הוידג'ט החכם המבוקש ישירות למסך וויקוף לפני החיפוש
+    render_active_ai_selector_widget("wyckoff_screen")
+    
     c1, c2 = st.columns([4, 1])
-    with c1: ticker = st.text_input("סימול מניה (Wyckoff)", "NVDA")
+    with c1: ticker = st.text_input("הזן סימול מניה לניתוח מבנה (למשל: NVDA, PLTR, AMZN):", "NVDA", key="wyckoff_ticker_input")
     with c2: 
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-        if st.button("▶ נתח VSA ופאזות", use_container_width=True):
+        btn = st.button("▶ הרץ ניתוח VSA מוסדי", use_container_width=True, type="primary")
+        
+    if btn:
+        with st.spinner("מנתח חתימות מחיר ומחזור..."):
             df = get_data(ticker.upper())
             if df is not None:
                 score, current_phase, phase_exp, alerts, vd, vc = analyze_wyckoff(df)
                 col1, col2 = st.columns([1, 2])
-                with col1: st.plotly_chart(render_gauge(score, vd, vc), use_container_width=True)
+                with col1: 
+                    st.plotly_chart(render_gauge(score, vd, vc), use_container_width=True)
                 with col2:
-                    st.markdown(f"### 📍 שלב נוכחי: **{current_phase}**")
+                    st.markdown(f"### 📍 סטטוס מבני נוכחי: **{current_phase}**")
                     st.markdown(f"*{phase_exp}*")
                     st.markdown("---")
-                    st.markdown("#### ניתוח מאמץ מול תוצאה (30 ימים אחרונים):")
-                    if alerts: _render_alerts(alerts)
-                    else: st.info("לא נצפו חריגות ווליום משמעותיות ביחס לממוצע השנתי בחודש האחרון.")
+                    st.markdown("#### ניתוח זיהוי מאמץ מול תוצאה:")
+                    if alerts:
+                        for alert in alerts:
+                            color = "#ef5350" if "⚠️" in alert else "#26a69a"
+                            st.markdown(f"<div style='background:#111b26; border-right:4px solid {color}; padding:10px; margin-bottom:10px; border-radius:5px;'>{alert}</div>", unsafe_allow_html=True)
+                    else: 
+                        st.info("לא נצפו חריגות נפח מסחר קיצוניות ביחס לממוצע השנתי במהלך 30 ימי המסחר האחרונים.")
                 st.plotly_chart(render_wyckoff_chart(df), use_container_width=True)
+            else:
+                st.error("לא נמצאו מספיק נתוני היסטוריה עבור הטיקר שהוזן. ודא שהסימול תקין.")
 
 
 # ============================================================
-# חלק 17-18: שומר מקום למסכים + מסך Backtest
+# חלק 11: שומרי מקום למסכים קבועים
 # ============================================================
-def screen_vp(): st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2><p>פעיל במנוע הראשי של הבק-טסט.</p></div>""",unsafe_allow_html=True)
-def screen_vwap(): st.markdown("""<div class="header-box vwap"><h2>📐 VWAP DEVIATION</h2><p>פעיל במנוע הראשי של הבק-טסט.</p></div>""",unsafe_allow_html=True)
-def screen_composite(): st.markdown("""<div class="header-box composite"><h2>🏆 COMPOSITE SCORE</h2><p>שקלול מלא פועל כעת ב-Backtest Engine.</p></div>""",unsafe_allow_html=True)
+def screen_vp(): 
+    st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE (מנוע פרופיל ווליום)</h2><p>מודול פרופיל הנפח וזיהוי אזורי ערך (Value Areas) פועל ומחושב כעת באופן אוטומטי כחלק מ-35 הפקטורים המובנים במערכת הבק-טסט והסורק.</p></div>""",unsafe_allow_html=True)
+def screen_vwap(): 
+    st.markdown("""<div class="header-box vwap"><h2>📐 VWAP DEVIATION (סטיות VWAP מוסדיות)</h2><p>מנוע סטיות נפח המחיר המשוקלל (Anchor Conflict) פעיל ומחושב דינמית כחלק מפקטורי המערכת המרכזיים.</p></div>""",unsafe_allow_html=True)
+def screen_composite(): 
+    st.markdown("""<div class="header-box composite"><h2>🏆 COMPOSITE SCORE (שקלול CIS מקיף)</h2><p>מערכת הניקוד המשוקללת פועלת כעת במלואה בתוך מנוע הבק-טסט ומציגה שרשרת סימנים חיוביים ושליליים בזמן אמת.</p></div>""",unsafe_allow_html=True)
 
 def screen_backtest():
-    st.markdown("""<div class="header-box composite" style="background:linear-gradient(135deg,#121a24,#1a2636);border:1px solid #2a4a6a;"><h2>📈 BACKTEST ENGINE (Powered by 35 Factors)</h2><p>המנוע מנתח את נתוני העבר של המניה על בסיס 35 פקטורים מוסדיים שרצים מתחת למכסה המנוע.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box composite" style="background:linear-gradient(135deg,#121a24,#1a2636);border:1px solid #2a4a6a;"><h2>📈 BACKTEST ENGINE (מנוע בק-טסט מונחה 35 פקטורים)</h2><p>הרצת סימולציית מסחר היסטורית מלאה המשלבת הגדרות עמלות, השפעת מחיר, וחישובי הסתברות מבוססי AI.</p></div>""",unsafe_allow_html=True)
     c1, c2 = st.columns([4, 1])
-    with c1: ticker = st.text_input("סימול מניה לבק-טסט:", "NVDA", key="bt_input")
+    with c1: ticker = st.text_input("הזן סימול מניה לבדיקה היסטורית מקיפה:", "NVDA", key="bt_input_field")
     with c2: 
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-        if st.button("▶ הרץ מנוע 35 פקטורים", use_container_width=True, type="primary"):
-            with st.spinner(f"מעבד נתונים על {ticker}..."):
-                res = BacktestEngine().run(ticker.upper())
-                if "error" in res: st.error(f"⚠️ שגיאה: {res['error']}")
-                else:
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("סה״כ עסקאות", res["trades"]); col2.metric("Win Rate", f"{res['wr']*100:.1f}%")
-                    col3.metric("תשואה כוללת", f"{res['ret']*100:.1f}%"); col4.metric("דרודאון מקסימלי", f"{res['max_dd']*100:.1f}%")
-                    st.markdown("---")
-                    st.markdown(f"**ציון CIS: {res['cis'].iloc[-1]:.1f}/100**")
-                    audit = res["audit"]; positives = [x for x in audit if x['impact'] > 0]; negatives = [x for x in audit if x['impact'] < 0]
-                    pc1, pc2 = st.columns(2)
-                    with pc1:
-                        st.success("✅ **דחפו למעלה:**")
-                        for p in positives[:4]: st.markdown(f"<div class='factor-box'><span class='hit'>+</span> <span class='factor-title'>{p['factor']}</span></div>", unsafe_allow_html=True)
-                    with pc2:
-                        st.error("❌ **הורידו ציון:**")
-                        for n in sorted(negatives, key=lambda x: x['impact'])[:4]: st.markdown(f"<div class='factor-box'><span class='miss'>-</span> <span class='factor-title'>{n['factor']}</span></div>", unsafe_allow_html=True)
+        run_btn = st.button("▶ הפעל סימולציית 35 פקטורים", use_container_width=True, type="primary")
+        
+    if run_btn:
+        with st.spinner(f"מריץ סימולציה ומחשב משקלים עבור {ticker.upper()}..."):
+            res = BacktestEngine().run(ticker.upper())
+            if "error" in res: 
+                st.error(f"⚠️ שגיאה בעיבוד: {res['error']}")
+            else:
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("סה״כ עסקאות", res["trades"])
+                col2.metric("אחוז הצלחה (Win Rate)", f"{res['wr']*100:.1f}%")
+                col3.metric("תשואה מצטברת בסימולציה", f"{res['ret']*100:.1f}%")
+                col4.metric("דרודאון מקסימלי (Max DD)", f"{res['max_dd']*100:.1f}%")
+                st.markdown("---")
+                st.markdown(f"### 📊 ציון CIS נוכחי: **{res['cis'].iloc[-1]:.1f} / 100**")
+                audit = res["audit"]
+                positives = [x for x in audit if x['impact'] > 0]
+                negatives = [x for x in audit if x['impact'] < 0]
+                pc1, pc2 = st.columns(2)
+                with pc1:
+                    st.success("✅ **פקטורים שתמכו ותדלקו את הציון מעלה:**")
+                    for p in positives[:5]: 
+                        st.markdown(f"<div class='factor-box'><span class='hit'>+</span> <span class='factor-title'>{p['factor']}</span></div>", unsafe_allow_html=True)
+                with pc2:
+                    st.error("❌ **פקטורים שהפעילו לחץ והורידו את הציון מטה:**")
+                    for n in sorted(negatives, key=lambda x: x['impact'])[:5]: 
+                        st.markdown(f"<div class='factor-box'><span class='miss'>-</span> <span class='factor-title'>{n['factor']}</span></div>", unsafe_allow_html=True)
 
 
 # ============================================================
-# חלק 19: פונקציות ML עזר (Summary)
+# חלק 12: פונקציות עזר וסיכום מודל (תיקון באג feature_importances_)
 # ============================================================
 def get_model_summary(model, metadata):
-    importances = model.feature_importances_
+    """מחלץ בבטחה את חשיבות הפקטורים מהמודל ומונע קריסות של אובייקטי בייטס"""
+    if isinstance(model, bytes):
+        try:
+            model = pickle.loads(model)
+        except Exception as e:
+            return {"error_summary": f"נכשלה פתיחת אריזת המודל: {str(e)}"}
+            
+    try:
+        importances = model.feature_importances_
+    except AttributeError:
+        return {
+            "train_ticker": metadata.get("train_ticker", "???"),
+            "train_acc": metadata.get("train_acc", 0.0),
+            "period": metadata.get("period", "???"),
+            "slot": metadata.get("slot", "כללי"),
+            "top_factors": [{"name": "לא זמין - מודל לא מאומן כראוי", "importance": 0.0}]
+        }
+        
     top_factors = sorted(zip(SignalDebugger.LABELS.keys(), importances), key=lambda x: x[1], reverse=True)[:5]
     summary = {
         "train_ticker": metadata.get("train_ticker", "???"),
         "train_acc": metadata.get("train_acc", 0.0),
         "period": metadata.get("period", "???"),
         "slot": metadata.get("slot", "כללי"),
-        "timestamp": metadata.get("timestamp", "???"),
         "top_factors": [{"name": SignalDebugger.LABELS.get(f, f), "importance": imp} for f, imp in top_factors]
     }
     return summary
 
 
 # ============================================================
-# חלק 20: מודול 6 - ML Trainer
+# חלק 13: מודול MACHINE LEARNING TRAINER & ARCHIVE
 # ============================================================
 def screen_ml_trainer():
-    st.markdown("""<div class="header-box ml"><h2>🧠 MACHINE LEARNING TRAINER & ARCHIVE</h2><p>בחר לאיזו משבצת אסטרטגית תרצה לשייך את המודל החדש.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box ml"><h2>🧠 MACHINE LEARNING TRAINER & ARCHIVE</h2><p>מסך אימון וניהול מודלים מבוססי Random Forest לחלוקה אסטרטגית לפי 3 משבצות סקטוריאליות קבועות.</p></div>""",unsafe_allow_html=True)
     
-    # רשימת המשבצות הקבועות
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדדים)", "Commodities (סחורות)"]
     
-    st.markdown("### 📥 טעינת מאגר מודלים (אוטומטי או ידני)")
+    st.markdown("### 📥 טעינה וניהול המאגר")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔄 טען מאגר אוטומטית מגיטהאב (Auto-Load)", use_container_width=True, type="primary"):
-            file_path = "models/batch_archive_v1.txt"
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, "r") as f:
-                        encoded_batch = f.read().strip()
-                    if encoded_batch and "כאן יודבק" not in encoded_batch:
-                        decoded = base64.b64decode(encoded_batch.encode("utf-8"))
-                        st.session_state.model_archive = pickle.loads(decoded)
-                        st.success(f"✅ נטענו מודלים לתוך המשבצות בהצלחה!")
-                        st.rerun()
-                    else:
-                        st.warning("הקובץ בגיטהאב עדיין ריק. תשמור אליו מודלים קודם.")
-                except Exception as e:
-                    st.error(f"❌ שגיאה בפענוח: {e}")
+            if trigger_auto_load_from_file():
+                st.success("✅ כל המודלים נטענו בהצלחה מתוך קובץ הארכיון בגיטהאב!")
+                st.rerun()
             else:
-                st.error(f"❌ הקובץ {file_path} לא נמצא. ודא שיצרת אותו בגיטהאב.")
+                st.warning("לא נמצא קובץ תקין בנתיב היעד, או שהקובץ ריק.")
                 
-        with st.expander("טעינה ידנית (הדבקת קוד)"):
-            encoded_paste = st.text_area("הדבק קוד Base64:", height=80)
-            if st.button("טען ידנית"):
+        with st.expander("אפשרויות טעינה ידנית (הדבקת קוד Base64)"):
+            encoded_paste = st.text_area("הדבק קוד מאגר מוצפן:", height=80)
+            if st.button("בצע טעינה ידנית"):
                 try:
                     decoded = base64.b64decode(encoded_paste.strip().encode("utf-8"))
-                    st.session_state.model_archive = pickle.loads(decoded)
-                    st.success("✅ נטען בהצלחה!"); st.rerun()
-                except: st.error("❌ קוד לא תקין.")
+                    raw_archive = pickle.loads(decoded)
+                    st.session_state.model_archive = clean_and_unpack_archive(raw_archive)
+                    st.success("✅ המאגר הידני נטען ופוענח בהצלחה!"); st.rerun()
+                except: 
+                    st.error("❌ הקוד שהוזן אינו תקין או פגום.")
 
     with col2:
         if st.session_state.model_archive:
             available_slots = list(st.session_state.model_archive.keys())
-            st.markdown(f"**📚 משבצות זמינות כרגע:** {len(available_slots)}/3")
-            selected_model = st.selectbox("בחר מודל להפעלה במנוע הראשי:", available_slots)
-            if st.button("✅ הפעל מודל נבחר"):
-                st.session_state.ml_model = st.session_state.model_archive[selected_model]["model"]
-                st.session_state.ml_metadata = st.session_state.model_archive[selected_model]["metadata"]
+            st.markdown(f"**📚 משבצות פעילות ומאוכלסות כרגע במערכת:** {len(available_slots)} / 3")
+            selected_model = st.selectbox("בחר מודל להפעלה במנוע החישוב הראשי של השוק:", available_slots)
+            if st.button("✅ הפעל מודל נבחר לשימוש"):
+                target_data = st.session_state.model_archive[selected_model]
+                model_obj = target_data["model"]
+                if isinstance(model_obj, bytes):
+                    model_obj = pickle.loads(model_obj)
+                    
+                st.session_state.ml_model = model_obj
+                st.session_state.ml_metadata = target_data["metadata"]
                 st.session_state.use_ml = True
-                st.success(f"המודל '{selected_model}' הופעל!")
+                st.success(f"המודל '{selected_model}' הוגדר בהצלחה כמודל השולט במערכת!")
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🚀 אימון מודל חדש")
+    st.markdown("### 🚀 אימון מודל סקטוריאלי חדש")
     c1, c2, c3, c4 = st.columns([1.5, 1.5, 1, 1])
-    with c1: train_ticker = st.text_input("סימול לאימון:", "SPY")
-    with c2: target_slot = st.selectbox("בחר משבצת (ידרוס מודל קודם):", MODEL_SLOTS)
-    with c3: start_date = st.date_input("מתאריך:", value=datetime(2022, 1, 1))
-    with c4: end_date = st.date_input("עד תאריך:", value=datetime.now())
+    with c1: train_ticker = st.text_input("הזן סימול מניה מובילה לאימון (למשל: AMD, COP, IWM):", "SPY", key="ml_train_ticker")
+    with c2: target_slot = st.selectbox("שייך למשבצת אסטרטגית (ידרוס מודל קודם במשבצת):", MODEL_SLOTS)
+    with c3: start_date = st.date_input("תאריך תחילת אימון:", value=datetime(2023, 1, 1))
+    with c4: end_date = st.date_input("תאריך סיום אימון:", value=datetime(2023, 12, 31))
 
-    if st.button("🚀 התחל אימון ושמור למשבצת", use_container_width=True, type="primary"):
-        with st.spinner(f"מאמן מודל למשבצת '{target_slot}' על בסיס {train_ticker}..."):
+    if st.button("🚀 התחל תהליך למידת מכונה ושמור למשבצת המוגדרת", use_container_width=True, type="primary"):
+        with st.spinner(f"שואב נתונים ומאמן מודל משבצת '{target_slot}' על בסיס נתוני {train_ticker}..."):
             df = yf.Ticker(train_ticker.upper()).history(start=start_date, end=end_date)
-            if df is not None and len(df) >= 100:
+            if df is not None and len(df) >= 40:
                 engine = FactorEngine(BacktestConfig())
                 factors = engine.compute(df)
                 target = (df["Close"].shift(-10) / df["Close"] - 1 > 0.02).astype(int)
@@ -487,86 +710,149 @@ def screen_ml_trainer():
                 model.fit(X, y)
                 
                 acc = model.score(X, y)
-                meta = {"train_ticker": train_ticker.upper(), "train_acc": acc, "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}", "slot": target_slot}
+                meta = {
+                    "train_ticker": train_ticker.upper(), 
+                    "train_acc": acc, 
+                    "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}", 
+                    "slot": target_slot
+                }
                 
-                # שמירה ישירות למשבצת הקבועה (דורס אם כבר קיים)
                 st.session_state.model_archive[target_slot] = {"model": model, "metadata": meta}
-                
-                st.session_state.ml_model = model; st.session_state.ml_metadata = meta; st.session_state.use_ml = True
-                st.success(f"✅ המודל למד בדיוק של {acc*100:.1f}% ונשמר בהצלחה במשבצת: {target_slot}")
-            else: st.error("❌ לא נמצאו מספיק נתונים בתקופה שנבחרה.")
+                st.session_state.ml_model = model
+                st.session_state.ml_metadata = meta
+                st.session_state.use_ml = True
+                st.success(f"✅ תהליך האימון הושלם בדיוק פנימי של {acc*100:.1f}%. המודל נשמר בהצלחה במשבצת: {target_slot}")
+                st.rerun()
+            else: 
+                st.error("❌ שגיאה: לא נמצאו מספיק נתוני מסחר היסטוריים בטווח התאריכים המבוקש לאימון מודל יציב.")
 
     st.markdown("---")
-    st.markdown("### 📤 פעולות סיום אימון")
+    st.markdown("### 📤 פעולות ייצוא והפקת דוחות AI")
     ca, cb = st.columns(2)
     with ca:
         if st.session_state.model_archive:
-            st.markdown("### 📦 ייצוא לגיטהאב")
+            st.markdown("#### 📦 אריזת המאגר לקובץ")
             archive_export = {}
             for k, v in st.session_state.model_archive.items(): 
+                # מבצעים פיקול פנימי רק לצורך אריזת ייצוא נקייה ומניעת בעיות סנכרון
                 archive_export[k] = {"model": pickle.dumps(v["model"]), "metadata": v["metadata"]}
             encoded_all = base64.b64encode(pickle.dumps(archive_export)).decode("utf-8")
             
             st.download_button(
-                label="💾 הורד קובץ ארכיון (להעלאה לגיטהאב)",
+                label="💾 הורד קובץ ארכיון מעודכן (batch_archive_v1.txt)",
                 data=encoded_all,
                 file_name="batch_archive_v1.txt",
                 mime="text/plain",
                 use_container_width=True,
                 type="primary"
             )
-            st.markdown("*לחץ על הכפתור כדי להוריד את הקובץ, ואז פשוט תחליף אותו בגיטהאב (Upload files).*")
+            st.markdown("<small>*לחץ להורדת הקובץ למחשב, ולאחר מכן העלה אותו לתיקיית models בגיטהאב (ע״י Upload files) כדי לבצע דריסה אוטומטית.*</small>", unsafe_allow_html=True)
                 
     with cb:
         if st.session_state.model_archive:
-            if st.button("🤖 הפק דוח ליועץ ה-AI"):
-                report = "### דוח התקדמות למידה (מעודכן לפי משבצות)\n\n"
+            st.markdown("#### 🤖 הפקת דוח התקדמות עבור יועץ ה-AI")
+            if st.button("הפק דוח למידה מפורט ללא שגיאות"):
+                report = "### דוח התקדמות למידה (מעודכן לפי משבצות)
+
+"
                 for name, data in st.session_state.model_archive.items():
                     summ = get_model_summary(data['model'], data['metadata'])
-                    report += f"- **משבצת:** `{name}`\n"
-                    report += f"  - **טיקר אימון:** {summ['train_ticker']}\n"
-                    report += f"  - **תקופה:** {summ['period']}\n"
-                    report += f"  - **דיוק:** {summ['train_acc']*100:.1f}%\n"
-                    report += f"  - **פקטורים מובילים:** {', '.join([f['name'] for f in summ['top_factors'][:3]])}\n\n"
-                report += "--- \n*העתק והדבק בצ'אט עם ה-AI.*"
-                st.text_area("📋 דוח להעתקה:", value=report, height=150)
+                    if "error_summary" in summ:
+                        report += f"- **משבצת:** `{name}`
+  - שגיאה בחילוץ נתוני המודל.
+
+"
+                        continue
+                    report += f"- **משבצת:** `{name}`
+"
+                    report += f"  - **טיקר אימון:** {summ['train_ticker']}
+"
+                    report += f"  - **תקופה:** {summ['period']}
+"
+                    report += f"  - **דיוק:** {summ['train_acc']*100:.1f}%
+"
+                    report += f"  - **פקטורים מובילים:** {', '.join([f['name'] for f in summ['top_factors'][:3]])}
+
+"
+                report += "--- 
+*העתק והדבק בצ'אט עם ה-AI.*"
+                st.text_area("📋 טקסט הדו״ח המוסדי מוכן להעתקה:", value=report, height=160)
 
 
 # ============================================================
-# חלק 21: מודול 7 - סורק שוק חכם
+# חלק 14: מודול MARKET SCANNER (סורק שוק חכם מבוסס סקטורים ומודלים)
 # ============================================================
 def screen_scanner():
-    st.markdown("""<div class="header-box scanner"><h2>🔎 MARKET SCANNER</h2><p>סורק אוטומטית את רשימת המניות. הציונים מוצגים מהגבוה לנמוך כדי לזהות מי מתקרבת לשלב האיסוף.</p></div>""",unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1.5, 1, 1])
-    with col1: engine_choice = st.radio("בחר מנוע סריקה:", ["Wyckoff Structural Engine", "Composite CIS Score (ML/Static)"])
-    with col2: scan_limit = st.slider("מספר מניות לסריקה:", min_value=5, max_value=len(SCAN_UNIVERSE), value=20, step=5)
-    with col3: st.markdown("<br>", unsafe_allow_html=True); show_all = st.checkbox("הצג את כל התוצאות", value=True)
+    st.markdown("""<div class="header-box scanner"><h2>🔎 MARKET SCANNER - סורק שוק מוסדי מתקדמת</h2><p>סריקה מבוססת סקטורים ייעודיים המאפשרת התאמה מלאה ומדויקת בין קבוצת המניות הנבחרת למודל ה-AI הפעיל.</p></div>""",unsafe_allow_html=True)
     
-    if st.button("🚀 התחל סריקת שוק", use_container_width=True, type="primary"):
-        results = []; progress_bar = st.progress(0); status_text = st.empty(); tickers_to_scan = SCAN_UNIVERSE[:scan_limit]
+    # הוספת הוידג'ט החכם המבוקש ישירות למסך הסורק לפני החיפוש והסינון
+    render_active_ai_selector_widget("scanner_screen")
+    
+    st.markdown("### ⚙️ הגדרות סינון ומיקוד לסריקה")
+    col_x, col_y, col_z = st.columns([2, 1, 1])
+    
+    with col_x:
+        # הגולל הבורר המבוקש המאפשר למקד את הסורק בסקטור ספציפי ביחס למודל
+        selected_sector_label = st.selectbox(
+            "🎯 בחר סקטור / קבוצת מניות להתמקד בה בסריקה:", 
+            list(SECTOR_MAP.keys()),
+            key="scanner_sector_selector"
+        )
+        chosen_universe = SECTOR_MAP[selected_sector_label]
+        
+    with col_y:
+        scan_limit = st.slider("כמות מניות לסריקה מקסימלית:", min_value=5, max_value=len(chosen_universe), value=min(20, len(chosen_universe)), step=5)
+    with col_z:
+        engine_choice = st.radio("מנוע ציון לסריקה:", ["Wyckoff Structural Engine", "Composite CIS Score (ML/Static)"])
+        show_all = st.checkbox("הצג את כל תוצאות הסריקה", value=True)
+        
+    if st.button("🚀 התחל סריקת שוק ממוקדת סקטור", use_container_width=True, type="primary"):
+        results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        tickers_to_scan = chosen_universe[:scan_limit]
+        
         for i, ticker in enumerate(tickers_to_scan):
-            status_text.text(f"מנתח את {ticker} ({i+1}/{scan_limit})..."); df = get_data(ticker, period="1y")
-            if df is not None and len(df) > 50:
+            status_text.text(f"מנתח ומחשב פקטורים עבור {ticker} ({i+1} מתוך {len(tickers_to_scan)})...")
+            df = get_data(ticker, period="1y")
+            if df is not None and len(df) > 30:
                 if "Wyckoff" in engine_choice:
                     score, current_phase, _, _, vd, _ = analyze_wyckoff(df)
                     results.append({"Ticker": ticker, "Score": score, "Engine": "Wyckoff", "Verdict": vd})
                 else:
-                    engine = FactorEngine(BacktestConfig()); factors = engine.compute(df); cis_score = engine.composite_cis(factors, df).iloc[-1]
+                    engine = FactorEngine(BacktestConfig())
+                    factors = engine.compute(df)
+                    cis_score = engine.composite_cis(factors, df).iloc[-1]
                     verdict = "Strong Signal" if cis_score >= 75 else "Watch" if cis_score >= 60 else "Wait"
                     results.append({"Ticker": ticker, "Score": cis_score, "Engine": "CIS", "Verdict": verdict})
-            progress_bar.progress((i + 1) / scan_limit); time.sleep(0.1) 
-        status_text.text("✅ הסריקה הושלמה!"); st.markdown("---")
+            progress_bar.progress((i + 1) / len(tickers_to_scan))
+            time.sleep(0.05)
+            
+        status_text.text("✅ הסריקה הסקטוריאלית הושלמה בהצלחה!")
+        st.markdown("---")
+        
         if results:
             df_results = pd.DataFrame(results).sort_values(by="Score", ascending=False).reset_index(drop=True)
             threshold = 40 if "Wyckoff" in engine_choice else 60
-            if not show_all: df_results = df_results[df_results["Score"] >= threshold]
-            if not df_results.empty: st.success(f"📊 מציג {len(df_results)} תוצאות:"); st.dataframe(df_results, use_container_width=True)
-            else: st.warning(f"לא נמצאו מניות שעברו את הרף הקריטי ({threshold}).")
-        else: st.error("הסריקה נכשלה.")
+            if not show_all: 
+                df_results = df_results[df_results["Score"] >= threshold]
+                
+            if not df_results.empty: 
+                st.success(f"📊 מציג {len(df_results)} תוצאות עבור קבוצת: {selected_sector_label}")
+                st.dataframe(df_results, use_container_width=True)
+            else: 
+                st.warning(f"לא נמצאו מניות בסקטור זה שעברו את רף הסינון המינימלי ({threshold}).")
+        else: 
+            st.error("הסריקה נכשלה או שלא נאספו נתונים תקינים.")
 
 
 # ============================================================
-# חלק 22: ניתוב הראוטר
+# חלק 15: ניתוב הראוטר המרכזי של האפליקציה
 # ============================================================
-routes = {"wyckoff": screen_wyckoff, "vp": screen_vp, "vwap": screen_vwap, "composite": screen_composite, "backtest": screen_backtest, "ml": screen_ml_trainer, "scanner": screen_scanner}
+routes = {
+    "wyckoff": screen_wyckoff, "vp": screen_vp, "vwap": screen_vwap, 
+    "composite": screen_composite, "backtest": screen_backtest, 
+    "ml": screen_ml_trainer, "scanner": screen_scanner
+}
 routes[st.session_state.mode]()
