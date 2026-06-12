@@ -212,6 +212,8 @@ class BacktestConfig:
     initial_capital: float = 100_000.0
     hold_days: int = 40
     period: str = "2y"
+    stop_loss_pct: float = 0.05      # NEW
+    atr_multiplier: float = 2.0      # NEW
 
 class FactorEngine:
     def __init__(self, cfg: BacktestConfig): self.cfg = cfg
@@ -420,7 +422,7 @@ def check_phase_entry_allowed(phase, risk_profile):
     elif risk_profile == "Conservative": return any(p in phase for p in ["Phase E", "Breakout"])
     return False
 
-def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=None, end=None, risk_profile="Balanced"):
+def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=None, end=None, risk_profile="Balanced", stop_loss_pct=0.05, atr_multiplier=2.0):
     df = get_data(ticker, period=period, start=start, end=end)
     if df is None: return None, None
     cfg_period = period if period else f"{start}/{end}"
@@ -430,7 +432,15 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
     df['cis_score'] = engine.composite_cis(factors, df)
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
 
+    # ATR calculation for stop loss
+    high_low = df['High'] - df['Low']
+    high_close = (df['High'] - df['Close'].shift(1)).abs()
+    low_close = (df['Low'] - df['Close'].shift(1)).abs()
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr_series = true_range.rolling(14).mean()
+
     positions = []; audit_logs = []; in_position = False; entry_price = 0; entry_phase = ""; entry_date = None; peak_price = 0
+    cis_at_entry = 0; stop_loss_level = 0
     for i in range(len(df)):
         current_phase = df['wyckoff_phase'].iloc[i]
         current_cis = df['cis_score'].iloc[i]
@@ -440,14 +450,55 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
         if not in_position:
             if phase_allowed and score_allowed:
                 positions.append(1); in_position = True; entry_price = df['Close'].iloc[i]; entry_phase = current_phase; entry_date = df.index[i]; peak_price = entry_price
+                cis_at_entry = current_cis
+                # Determine stop loss level
+                atr_val = atr_series.iloc[i] if not pd.isna(atr_series.iloc[i]) else 0
+                if atr_val > 0:
+                    stop_loss_level = min(entry_price * (1 - stop_loss_pct), entry_price - atr_val * atr_multiplier)
+                else:
+                    stop_loss_level = entry_price * (1 - stop_loss_pct)
             else: positions.append(0)
         else:
+            # Stop loss check
+            if df['Low'].iloc[i] <= stop_loss_level:
+                positions.append(0)
+                exit_px = stop_loss_level
+                ret = (exit_px - entry_price) / entry_price
+                max_dd = (peak_price - min(entry_price, exit_px)) / peak_price if peak_price > 0 else 0
+                audit_logs.append({
+                    "entry_date": entry_date.strftime("%Y-%m-%d"),
+                    "exit_date": df.index[i].strftime("%Y-%m-%d"),
+                    "phase_at_entry": entry_phase,
+                    "entry_price": round(entry_price, 2),
+                    "exit_price": round(exit_px, 2),
+                    "return_pct": round(ret * 100, 2),
+                    "win": ret > 0,
+                    "max_drawdown_pct": round(max_dd * 100, 2),
+                    "exit_type": "Pattern_Recognition_Failure",
+                    "phase_at_exit": current_phase,
+                    "cis_at_entry": cis_at_entry
+                })
+                in_position = False
+                continue
+            # Normal exit logic
             if "לא בתהליך" in current_phase or current_cis < threshold - 15:
                 positions.append(0)
                 exit_px = df['Close'].iloc[i]
                 ret = (exit_px - entry_price) / entry_price
                 max_dd = (peak_price - min(entry_price, exit_px)) / peak_price if peak_price > 0 else 0
-                audit_logs.append({"entry_date": entry_date.strftime("%Y-%m-%d"), "exit_date": df.index[i].strftime("%Y-%m-%d"), "phase_at_entry": entry_phase, "entry_price": round(entry_price, 2), "exit_price": round(exit_px, 2), "return_pct": round(ret * 100, 2), "win": ret > 0, "max_drawdown_pct": round(max_dd * 100, 2)})
+                audit_logs.append({
+                    "entry_date": entry_date.strftime("%Y-%m-%d"),
+                    "exit_date": df.index[i].strftime("%Y-%m-%d"),
+                    "phase_at_entry": entry_phase,
+                    "entry_price": round(entry_price, 2),
+                    "exit_price": round(exit_px, 2),
+                    "return_pct": round(ret * 100, 2),
+                    "win": ret > 0,
+                    "max_drawdown_pct": round(max_dd * 100, 2),
+                    "exit_type": "Phase_Change",
+                    "phase_at_exit": current_phase,
+                    "cis_at_entry": cis_at_entry
+                })
                 in_position = False
             else:
                 positions.append(1)
@@ -618,11 +669,10 @@ def screen_ml_trainer():
 
             st.info("💡 שים לב: כשסף ה-Threshold המומלץ יפסיק להשתנות מאימון לאימון (על אותה מניה/סקטור), תדע שהמודל הגיע למיצוי ההבנה שלו את השוק (Convergence).")
 
-            # 🧾 JSON EXPORT – משולב בתוך הבלוק כדי להבטיח גישה לנתונים
+            # 🧾 JSON EXPORT – now contains exit_type, phase_at_exit, cis_at_entry via audit_df
             st.markdown("---")
             st.markdown("### 📥 ייצוא דו\"ח אימון (JSON)")
 
-            # בניית אובייקט ה-JSON
             export_json = {
                 "config": {
                     "ticker": train_ticker,
