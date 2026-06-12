@@ -734,7 +734,6 @@ def screen_ml_trainer():
             st.markdown("#### 📦 אריזת המאגר לקובץ")
             archive_export = {}
             for k, v in st.session_state.model_archive.items(): 
-                # מבצעים פיקול פנימי רק לצורך אריזת ייצוא נקייה ומניעת בעיות סנכרון
                 archive_export[k] = {"model": pickle.dumps(v["model"]), "metadata": v["metadata"]}
             encoded_all = base64.b64encode(pickle.dumps(archive_export)).decode("utf-8")
             
@@ -752,30 +751,18 @@ def screen_ml_trainer():
         if st.session_state.model_archive:
             st.markdown("#### 🤖 הפקת דוח התקדמות עבור יועץ ה-AI")
             if st.button("הפק דוח למידה מפורט ללא שגיאות"):
-                report = "### דוח התקדמות למידה (מעודכן לפי משבצות)
-
-"
+                report = "### דוח התקדמות למידה (מעודכן לפי משבצות)" + "\n\n"
                 for name, data in st.session_state.model_archive.items():
                     summ = get_model_summary(data['model'], data['metadata'])
                     if "error_summary" in summ:
-                        report += f"- **משבצת:** `{name}`
-  - שגיאה בחילוץ נתוני המודל.
-
-"
+                        report += "- **משבצת:** `" + name + "`\n  - שגיאה בחילוץ נתוני המודל.\n\n"
                         continue
-                    report += f"- **משבצת:** `{name}`
-"
-                    report += f"  - **טיקר אימון:** {summ['train_ticker']}
-"
-                    report += f"  - **תקופה:** {summ['period']}
-"
-                    report += f"  - **דיוק:** {summ['train_acc']*100:.1f}%
-"
-                    report += f"  - **פקטורים מובילים:** {', '.join([f['name'] for f in summ['top_factors'][:3]])}
-
-"
-                report += "--- 
-*העתק והדבק בצ'אט עם ה-AI.*"
+                    report += "- **משבצת:** `" + name + "`\n"
+                    report += "  - **טיקר אימון:** " + str(summ['train_ticker']) + "\n"
+                    report += "  - **תקופה:** " + str(summ['period']) + "\n"
+                    report += "  - **דיוק:** " + f"{summ['train_acc']*100:.1f}%\n"
+                    report += "  - **פקטורים מובילים:** " + ', '.join([f['name'] for f in summ['top_factors'][:3]]) + "\n\n"
+                report += "--- \n*העתק והדבק בצ'אט עם ה-AI.*"
                 st.text_area("📋 טקסט הדו״ח המוסדי מוכן להעתקה:", value=report, height=160)
 
 
