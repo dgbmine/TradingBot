@@ -561,7 +561,7 @@ def screen_wyckoff():
                 st.error("לא נמצאו נתונים.")
 
 # ============================================================
-# חלק 9: BACKTEST ENGINE (מנוע Baseline משולב)
+# חלק 9: BACKTEST ENGINE (מנוע Baseline משולב + בורר מנועים)
 # ============================================================
 def calculate_max_drawdown(return_series):
     wealth_index = (1 + return_series).cumprod()
@@ -574,17 +574,70 @@ def calculate_sharpe_ratio(return_series, risk_free=0.04):
     std_ret = return_series.std() * np.sqrt(252)
     return mean_ret / std_ret if std_ret > 0 else 0
 
-def run_backtest_with_baseline(ticker, use_ai, threshold, period="2y"):
+def run_backtest_with_baseline(ticker, use_ai, threshold, period="2y", selected_engine="Composite Score"):
     df = get_data(ticker, period=period)
     if df is None:
         return None
+    
     engine = FactorEngine(BacktestConfig(period=period))
     factors = engine.compute(df)
-    df['composite_cis'] = engine.composite_cis(factors, df)
+    
+    # לוגיקת בחירת מנוע: כל מנוע מייצר ציון שונה
+    if selected_engine == "Composite Score":
+        df['signal_score'] = engine.composite_cis(factors, df)
+    elif selected_engine == "Wyckoff":
+        # Wyckoff: שימוש בפונקציית הניתוח הקיימת
+        wyckoff_results = []
+        for i in range(len(df)):
+            if i >= 40:
+                window_df = df.iloc[:i+1]
+                score, _, _, _, _, _ = analyze_wyckoff_strict(window_df)
+                wyckoff_results.append(score)
+            else:
+                wyckoff_results.append(50)  # ערך ניטרלי בהתחלה
+        df['signal_score'] = pd.Series(wyckoff_results, index=df.index)
+    elif selected_engine == "Volume Profile":
+        # Volume Profile: מבוסס על ניתוח נפחי מסחר ורמות תמיכה/התנגדות
+        vol_profile_scores = []
+        for i in range(len(df)):
+            if i >= 20:
+                window = df.iloc[max(0, i-20):i+1]
+                vol_ma = window['Volume'].mean()
+                vol_std = window['Volume'].std()
+                current_vol = df['Volume'].iloc[i]
+                price_position = (df['Close'].iloc[i] - window['Low'].min()) / (window['High'].max() - window['Low'].min()) if (window['High'].max() - window['Low'].min()) > 0 else 0.5
+                
+                # ציון על בסיס מיקום במחיר וניתוח נפח
+                if current_vol > vol_ma + vol_std and price_position > 0.7:
+                    vol_profile_scores.append(80)  # קנייה חזקה
+                elif current_vol > vol_ma + vol_std and price_position < 0.3:
+                    vol_profile_scores.append(20)  # מכירה חזקה
+                elif price_position > 0.6:
+                    vol_profile_scores.append(65)  # מגמת עלייה
+                elif price_position < 0.4:
+                    vol_profile_scores.append(35)  # מגמת ירידה
+                else:
+                    vol_profile_scores.append(50)  # ניטרלי
+            else:
+                vol_profile_scores.append(50)
+        df['signal_score'] = pd.Series(vol_profile_scores, index=df.index)
+    elif selected_engine == "VWAP Deviation":
+        # VWAP Deviation: חישוב סטיית VWAP
+        tp = (df["High"] + df["Low"] + df["Close"]) / 3
+        vwap = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
+        deviation = ((df["Close"] - vwap) / vwap * 100).fillna(0)
+        
+        # המרת סטייה לציון 0-100
+        vwap_scores = 50 + (deviation * 10).clip(-50, 50)  # סטייה של 5% = 50 נקודות
+        df['signal_score'] = vwap_scores.clip(0, 100)
+    else:
+        df['signal_score'] = engine.composite_cis(factors, df)
+    
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
+    df['composite_cis'] = df['signal_score']  # שמירה על תאימות לאחור
     
     if use_ai:
-        df['Signal'] = np.where(df['composite_cis'] >= threshold, 1, 0)
+        df['Signal'] = np.where(df['signal_score'] >= threshold, 1, 0)
         df['Position'] = df['Signal'].shift(1).fillna(0)
     else:
         df['Position'] = 1
@@ -597,20 +650,37 @@ def run_backtest_with_baseline(ticker, use_ai, threshold, period="2y"):
 def screen_backtest():
     st.markdown("""<div class="header-box composite" style="background:linear-gradient(135deg,#121a24,#1a2636);border:1px solid #2a4a6a;">
     <h2>📊 ALPHA BACKTEST ENGINE</h2>
-    <p>סימולציה המשווה בין אסטרטגיית ה-AI (Composite) לבחין השוק (Buy & Hold).</p></div>""",unsafe_allow_html=True)
+    <p>סימולציה המשווה בין אסטרטגיית ה-AI לבחין השוק (Buy & Hold). בחר מנוע להרצה.</p></div>""",unsafe_allow_html=True)
     render_active_ai_selector_widget("backtest_screen")
+    
+    # בורר מנועים
+    engine_options = ["Composite Score", "Wyckoff", "Volume Profile", "VWAP Deviation"]
+    selected_engine = st.selectbox(
+        "🎯 בחר מנוע לסימולציה:",
+        engine_options,
+        index=0,
+        key="backtest_engine_selector",
+        help="בחר את מנוע הניתוח שיזין את אותות הקנייה/מכירה"
+    )
+    
     c1, c2, c3 = st.columns([2, 1.5, 1])
     with c1:
         ticker = st.text_input("סמל לבדיקה:", "COST", key="bt_ticker")
     with c2:
-        bt_threshold = st.slider("סף הפעלת AI (CIS Threshold)", 50, 95, 65)
+        bt_threshold = st.slider("סף הפעלת AI (CIS Threshold)", 50, 95, 65, 
+                                help="ציון מינימלי לכניסה לעסקה")
     with c3:
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
     run_btn = st.button("▶ הרץ סימולציית אלפא", use_container_width=True, type="primary")
     
     if run_btn:
-        with st.spinner(f"מעבד נתונים ומחשב Baseline עבור {ticker.upper()}..."):
-            bt_df = run_backtest_with_baseline(ticker.upper(), use_ai=st.session_state.use_ml, threshold=bt_threshold)
+        with st.spinner(f"מעבד נתונים עם מנוע {selected_engine} ומחשב Baseline עבור {ticker.upper()}..."):
+            bt_df = run_backtest_with_baseline(
+                ticker.upper(), 
+                use_ai=st.session_state.use_ml, 
+                threshold=bt_threshold,
+                selected_engine=selected_engine
+            )
             if bt_df is None:
                 st.error("שגיאה במשיכת הנתונים.")
             else:
@@ -623,9 +693,10 @@ def screen_backtest():
                 
                 # הדפסת avg_cis
                 avg_cis = bt_df['composite_cis'].mean()
-                st.markdown(f"**📊 ממוצע ציון CIS בתקופה:** {avg_cis:.1f} (מודל {'פעיל/מוטה' if avg_cis > 55 else 'אדיש/ניטרלי' if avg_cis < 45 else 'מאוזן'})")
+                st.markdown(f"**📊 ממוצע ציון {selected_engine} בתקופה:** {avg_cis:.1f} "
+                          f"(מודל {'פעיל/מוטה' if avg_cis > 55 else 'אדיש/ניטרלי' if avg_cis < 45 else 'מאוזן'})")
                 
-                st.markdown("### 📊 דוח ביצועים והשוואת מודל")
+                st.markdown(f"### 📊 דוח ביצועים - מנוע {selected_engine}")
                 metrics_data = {
                     "מדד": ["Total Return (תשואה)", "Max Drawdown (נב מקסימלי)", "Sharpe Ratio"],
                     "AI Strategy": [f"{strat_ret:.2%}", f"{strat_dd:.2%}", f"{strat_sharpe:.2f}"],
@@ -635,14 +706,25 @@ def screen_backtest():
                 st.dataframe(pd.DataFrame(metrics_data), use_container_width=True, hide_index=True)
                 
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], name='AI Strategy', line=dict(color='#00ff00', width=2.5)))
-                fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], name='Baseline', line=dict(color='#888888', width=2, dash='dot')))
+                fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], 
+                                        name=f'AI Strategy ({selected_engine})', 
+                                        line=dict(color='#00ff00', width=2.5)))
+                fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], 
+                                        name='Baseline (Buy & Hold)', 
+                                        line=dict(color='#888888', width=2, dash='dot')))
                 out_of_market = bt_df[bt_df['Position'] == 0]
                 if not out_of_market.empty and st.session_state.use_ml:
-                    fig.add_trace(go.Scatter(x=out_of_market.index, y=bt_df.loc[out_of_market.index, 'Cum_Strategy'],
-                                             mode='markers', name='מזומן (Cash/Kill Switch)', marker=dict(color='red', size=4, symbol='x')))
-                fig.update_layout(title="עקומת אלפא: צמיחת הון לעומת השוק", template="plotly_dark",
-                                  hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                    fig.add_trace(go.Scatter(x=out_of_market.index, 
+                                           y=bt_df.loc[out_of_market.index, 'Cum_Strategy'],
+                                           mode='markers', 
+                                           name='מזומן (Cash/Kill Switch)', 
+                                           marker=dict(color='red', size=4, symbol='x')))
+                fig.update_layout(
+                    title=f"עקומת אלפא: {selected_engine} לעומת השוק",
+                    template="plotly_dark",
+                    hovermode="x unified", 
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
                 st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================
