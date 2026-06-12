@@ -14,6 +14,7 @@ import base64
 import os
 import json
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
 from datetime import datetime
 import time
 
@@ -156,7 +157,7 @@ def trigger_auto_load_from_file():
     return False
 
 for k, v in [("mode", "wyckoff"), ("ml_model", None), ("ml_metadata", None),
-             ("use_ml", False), ("model_archive", {})]:
+             ("use_ml", False), ("model_archive", {}), ("phase_encoder", None)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -181,6 +182,7 @@ def render_active_ai_selector_widget(screen_identifier):
                     model_instance = pickle.loads(model_instance)
                 st.session_state.ml_model = model_instance
                 st.session_state.ml_metadata = target_data["metadata"]
+                st.session_state.phase_encoder = target_data.get("phase_encoder")
                 st.session_state.use_ml = True
                 st.success(f"המודל '{selected_slot}' הופעל בהצלחה!")
                 st.rerun()
@@ -223,7 +225,8 @@ st.markdown("---")
 if st.session_state.use_ml and st.session_state.ml_model is not None:
     metadata = st.session_state.ml_metadata or {}
     acc = metadata.get("test_acc", metadata.get("train_acc", 0.0))
-    st.info(f"🧠 **מצב AI מופעל באופן גלובלי:** מודל פעיל - {metadata.get('slot', 'כללי')} | דיוק בדיקה (Test): {acc*100:.1f}%")
+    model_type = metadata.get("model_type", "ML")
+    st.info(f"🧠 **מצב AI מופעל:** {model_type} - {metadata.get('slot', 'כללי')} | דיוק בדיקה (Test): {acc*100:.1f}%")
 
 # ============================================================
 # חלק 7: פקטורים ו-VSA (עדכון מוסדי עם Wyckoff Score)
@@ -243,18 +246,14 @@ class FactorEngine:
         self.cfg = cfg
 
     def _compute_quick_wyckoff(self, df: pd.DataFrame) -> pd.Series:
-        """מחשב את עוצמת הבלימה/פריצה של Wyckoff כמספר רציף (0-1)."""
         score = pd.Series(0.0, index=df.index)
         if len(df) < 40:
             return score
-
         spread = df['High'] - df['Low']
         vol_ma = df['Volume'].rolling(20).mean()
         spread_ma = spread.rolling(20).mean()
-        
         has_sc, has_ar, has_st = False, False, False
         sc_idx, sc_low, ar_high = 0, 0, 0
-        
         search_df = df.iloc[-90:]
         for i in range(1, len(search_df)):
             idx = search_df.index[i]
@@ -264,30 +263,22 @@ class FactorEngine:
             low = search_df['Low'].iloc[i]
             high = search_df['High'].iloc[i]
             open_px = search_df['Open'].iloc[i]
-            
             if not has_sc:
                 if close < open_px and vol > vol_ma_i * 2.0 and close <= search_df['Close'].iloc[max(0, i-20):i].min():
-                    has_sc = True
-                    sc_idx = i
-                    sc_low = low
-                    score.loc[idx] = 0.3
+                    has_sc = True; sc_idx = i; sc_low = low; score.loc[idx] = 0.3
             elif has_sc and not has_ar and (i - sc_idx <= 15):
                 if close > open_px and close > search_df['Close'].iloc[i-1]:
-                    has_ar = True
-                    ar_high = high
-                    score.loc[idx] = 0.4
+                    has_ar = True; ar_high = high; score.loc[idx] = 0.4
             elif has_ar and not has_st:
                 if vol < search_df['Volume'].iloc[sc_idx] * 0.75 and abs(low - sc_low)/sc_low < 0.05:
-                    has_st = True
-                    score.loc[idx] = 0.6
+                    has_st = True; score.loc[idx] = 0.6
             elif has_st:
                 if low < sc_low and close > sc_low:
                     score.loc[idx] = 0.8
                 elif low > sc_low and low < search_df['Low'].iloc[i-1] and vol < vol_ma_i:
                     score.loc[idx] = 0.85
                 elif close > ar_high and vol > vol_ma_i * 1.5:
-                    score.loc[idx] = 1.0
-                    has_sc = False
+                    score.loc[idx] = 1.0; has_sc = False
         return score
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -295,32 +286,23 @@ class FactorEngine:
         tp = (df["High"] + df["Low"] + df["Close"]) / 3
         body = (df["Close"] - df["Open"]).abs()
         rng = df["High"] - df["Low"]
-        lower_shadow = df[["Open","Close"]].min(axis=1) - df["Low"]
         vol_ma20 = df["Volume"].rolling(20).mean()
         rvol = df["Volume"] / vol_ma20.replace(0, np.nan)
-
         spread_ma20 = rng.rolling(20).mean()
         effort_vs_result = ((df["Volume"] > vol_ma20 * 1.5) & (rng < spread_ma20 * 0.8))
         near_low = df["Close"] <= df["Low"].rolling(20).min() * 1.05
         f["f04_absorption"] = (effort_vs_result & near_low).astype(float)
-        
         f["f36_wyckoff_score"] = self._compute_quick_wyckoff(df)
-
         price_bins = pd.cut(df["Close"], bins=40, labels=False)
         f["f01_liquidity_gap"] = ((df.groupby(price_bins)["Volume"].transform("sum") < df.groupby(price_bins)["Volume"].transform("mean") * 0.5).astype(float).rolling(5).mean())
-
-        sma20 = df["Close"].rolling(20).mean()
-        std20 = df["Close"].rolling(20).std()
+        sma20 = df["Close"].rolling(20).mean(); std20 = df["Close"].rolling(20).std()
         atr14 = pd.concat([rng, (df["High"] - df["Close"].shift(1)).abs(), (df["Low"] - df["Close"].shift(1)).abs()], axis=1).max(axis=1).rolling(14).mean()
         f["f02_volatility_squeeze"] = ((((2 * std20) / sma20.replace(0, np.nan)) < ((2 * std20) / sma20.replace(0, np.nan)).rolling(20).mean() * 0.75) & (atr14 < atr14.rolling(20).mean() * 0.75)).astype(float)
-
         spy_slope = df.get("spy_close", df["Close"]).rolling(50).mean().diff(10) / df.get("spy_close", df["Close"]).rolling(50).mean().shift(10).replace(0, np.nan)
         f["f03_regime"] = (spy_slope > 0.01).astype(float) - (spy_slope < -0.01).astype(float)
-
         resist = df["High"].rolling(20).max().shift(1)
         f["f05_breakout_quality"] = ((df["Close"] > resist) & (df["Close"].rolling(3).mean() > resist.shift(1))).astype(float)
         f["f06_cis_weight"] = np.clip(1.0 / (std20 / std20.rolling(60).mean().replace(0, np.nan)).replace(0, np.nan), 0.5, 2.0)
-
         obv = (np.sign(df["Close"].diff()) * df["Volume"]).cumsum()
         f["f07_obv_velocity"] = (obv.diff(10) / obv.abs().rolling(10).mean().replace(0, np.nan)).clip(-3, 3)
         f["f08_fft"] = ((df["Close"] > df["Close"].shift(1)) & (df["Close"].shift(-1) < df["Close"]) & (rvol > 1.5)).astype(float)
@@ -331,16 +313,13 @@ class FactorEngine:
         f["f13_confidence_decay"] = np.exp(-f["f04_absorption"].replace(0, np.nan).ffill().isna().astype(int) / 10.0).clip(0, 1)
         f["f14_inst_intent"] = (f["f04_absorption"] * 0.3 + f["f07_obv_velocity"].clip(0, 1) * 0.4 + f["f10_temporal_seq"] * 0.3).clip(0, 1)
         f["f15_mtf"] = ((df["Close"] > sma20).astype(float) * (df["Close"].rolling(5).mean() > df["Close"].rolling(5).mean().rolling(4).mean()).astype(float))
-
         vwap_full = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
         f["f16_anchor_conflict"] = (((df["Close"] > vwap_full).astype(float).rolling(3).sum() * (df["Close"] < vwap_full).astype(float).rolling(3).sum()) > 0).astype(float)
         f["f17_vol_cluster"] = (atr14 > atr14.shift(5) * 1.3).astype(float)
         f["f18_sector_breadth"] = (df["Close"] > df["Close"].shift(1)).astype(float).rolling(10).mean()
         f["f19_order_flow"] = (((df["Close"] - df["Low"]) / rng.replace(0, np.nan)) - ((df["High"] - df["Close"]) / rng.replace(0, np.nan))).rolling(5).mean()
-
         support = df["Low"].rolling(20).min().shift(1)
         f["f20_liquidity_sweep"] = ((df["Low"] < support) & (df["Close"] > support)).astype(float)
-
         range_20 = df["High"].rolling(20).max() - df["Low"].rolling(20).min()
         f["f21_break_auth"] = ((df["Close"] - df["Close"].shift(1)).abs() / range_20.replace(0, np.nan)).clip(0, 1)
         f["f22_sr_strength"] = (df["Low"].rolling(5).min() <= df["Low"].rolling(20).min() * 1.005).astype(float).rolling(20).sum() / 20
@@ -350,18 +329,15 @@ class FactorEngine:
         f["f26_accept_reject"] = ((df["Close"] > (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean() - ((df["Close"] < (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean()
         f["f27_vol_regime"] = ((atr14 / atr14.rolling(60).mean().replace(0, np.nan)) < 0.8).astype(float) - ((atr14 / atr14.rolling(60).mean().replace(0, np.nan)) > 1.2).astype(float)
         f["f28_inst_part"] = ((body > body.rolling(20).mean() * 1.5) & (rvol > 1.5)).astype(float)
-
         sma50 = df["Close"].rolling(50).mean(); sma200 = df["Close"].rolling(200).mean()
         f["f29_trend_integrity"] = ((df["Close"] > sma20).astype(int) + (sma20 > sma50).astype(int) + (sma50 > sma200).astype(int)) / 3
         f["f30_mean_rev"] = (-((df["Close"] - sma20) / std20.replace(0, np.nan))).clip(-3, 3)
         f["f31_bear_trap"] = ((df["Close"] < df["Low"].rolling(20).min().shift(1)) & (df["Close"].shift(1) > df["Low"].rolling(20).min().shift(2))).astype(float)
-
         dist_ath = (df["Close"].rolling(252).max() - df["Close"]) / df["Close"].rolling(252).max().replace(0, np.nan)
         f["f32_accum_type"] = (dist_ath > 0.25).astype(float) * 1.0 + ((dist_ath < 0.15) & (dist_ath > 0.05)).astype(float) * 0.6
         f["f33_liq_exhaust"] = ((df["Volume"].rolling(5).mean() < df["Volume"].rolling(5).mean().shift(10)) & (df["Close"].pct_change(5).abs() < 0.02)).astype(float)
         f["f34_corr_stress"] = df["Close"].pct_change().rolling(20).corr(df.get("spy_close", df["Close"]).pct_change()).clip(-1, 1).fillna(0)
         f["f35_struct_break"] = (df["Close"] > df["High"].rolling(20).max().shift(1)).astype(float) - (df["Close"] < df["Low"].rolling(20).min().shift(1)).astype(float)
-
         return f.fillna(0)
 
     def composite_cis(self, factors: pd.DataFrame, df: pd.DataFrame = None) -> pd.Series:
@@ -369,15 +345,20 @@ class FactorEngine:
             model = st.session_state.ml_model
             if isinstance(model, bytes):
                 model = pickle.loads(model)
-            
             X_pred = factors.copy()
+            # Phase Encoding if available
+            phase_encoder = st.session_state.phase_encoder
+            if phase_encoder is not None and df is not None and "wyckoff_phase" in df.columns:
+                phases = df["wyckoff_phase"].fillna("לא בתהליך איסוף")
+                phase_labels = phase_encoder.transform(phases)
+                for i, label in enumerate(phase_encoder.classes_):
+                    X_pred[f"phase_{label}"] = (phase_labels == i).astype(int)
             expected_features = getattr(model, "feature_names_in_", None)
             if expected_features is not None:
                 for c in expected_features:
                     if c not in X_pred.columns:
                         X_pred[c] = 0
                 X_pred = X_pred[expected_features]
-            
             try:
                 probs = model.predict_proba(X_pred)[:, 1]
             except:
@@ -397,26 +378,20 @@ class FactorEngine:
                 if col in factors.columns:
                     score += factors[col].clip(-1, 1) * weight
             score = (score / tot * 100 + 50).clip(0, 100)
-
         if "f36_wyckoff_score" in factors.columns:
             wyckoff_score = factors["f36_wyckoff_score"]
             boost = np.where(wyckoff_score > 0.5, (wyckoff_score - 0.5) * 40, 0)
             score = score + boost
-
         if "f11_kill_switch" in factors.columns:
             score = score * (1 - factors["f11_kill_switch"])
-        
         return score.round(1).clip(0, 100)
 
     def get_wyckoff_phase(self, df: pd.DataFrame) -> pd.Series:
-        """מחזיר סדרת Phases עבור כל נקודת זמן."""
         phases = pd.Series("לא בתהליך איסוף", index=df.index)
         if len(df) < 40:
             return phases
-        
         has_sc, has_ar, has_st = False, False, False
         sc_idx, sc_low, ar_high = 0, 0, 0
-        
         for i in range(40, len(df)):
             window = df.iloc[max(0, i-90):i+1]
             if len(window) < 40:
@@ -430,22 +405,15 @@ class FactorEngine:
                 low = window['Low'].iloc[j]
                 high = window['High'].iloc[j]
                 open_px = window['Open'].iloc[j]
-                
                 if not has_sc:
                     if close < open_px and vol > vol_ma_j * 2.0 and close <= window['Close'].iloc[max(0, j-20):j].min():
-                        has_sc = True
-                        sc_idx = j
-                        sc_low = low
-                        current_phase = "Phase A (SC)"
+                        has_sc = True; sc_idx = j; sc_low = low; current_phase = "Phase A (SC)"
                 elif has_sc and not has_ar and (j - sc_idx <= 15):
                     if close > open_px and close > window['Close'].iloc[j-1]:
-                        has_ar = True
-                        ar_high = high
-                        current_phase = "Phase B (AR)"
+                        has_ar = True; ar_high = high; current_phase = "Phase B (AR)"
                 elif has_ar and not has_st:
                     if vol < window['Volume'].iloc[sc_idx] * 0.75 and abs(low - sc_low)/sc_low < 0.05:
-                        has_st = True
-                        current_phase = "Phase B (ST)"
+                        has_st = True; current_phase = "Phase B (ST)"
                 elif has_st:
                     if low < sc_low and close > sc_low:
                         current_phase = "Phase C (Spring)"
@@ -453,46 +421,28 @@ class FactorEngine:
                         current_phase = "Phase D (LPS)"
                     elif close > ar_high and vol > vol_ma_j * 1.5:
                         current_phase = "Phase D (SOS)"
-                        has_sc = False
-                        has_ar = False
-                        has_st = False
+                        has_sc = False; has_ar = False; has_st = False
                     elif close > ar_high * 1.02:
                         current_phase = "Phase E (Breakout)"
             phases.iloc[i] = current_phase
         return phases
 
-class SignalDebugger:
-    LABELS = {
-        "f04_absorption": "VSA: Effort vs Result (Absorption)",
-        "f07_obv_velocity": "OBV Accumulation Velocity",
-        "f14_inst_intent": "Institutional Intent",
-        "f20_liquidity_sweep": "Liquidity Sweep",
-        "f29_trend_integrity": "Trend Integrity",
-        "f23_gap_structure": "Gap Structure",
-        "f31_bear_trap": "False Support Breakdown",
-        "f30_mean_rev": "Mean Reversion"
-    }
-
-    def audit(self, factors: pd.DataFrame, cis: pd.Series) -> list:
-        row = factors.iloc[-1]; res = []
-        if st.session_state.use_ml and st.session_state.ml_model is not None:
-            model = st.session_state.ml_model
-            if isinstance(model, bytes):
-                model = pickle.loads(model)
-            importances = getattr(model, "feature_importances_", np.zeros(len(factors.columns)))
-            expected_features = getattr(model, "feature_names_in_", factors.columns)
-            for i, col in enumerate(expected_features):
-                if col in self.LABELS and importances[i] > 0.01:
-                    val = row[col] if col in row else 0
-                    res.append({"factor": self.LABELS[col], "impact": importances[i] * (1 if val > 0 else -1) * 100})
-        else:
-            for col, val in row.items():
-                if col in self.LABELS and val != 0:
-                    res.append({"factor": self.LABELS[col], "impact": val})
-        return sorted(res, key=lambda x: x["impact"], reverse=True)
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, pd.Timestamp):
+            return obj.strftime("%Y-%m-%d")
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super(NpEncoder, self).default(obj)
 
 # ============================================================
-# חלק 8: WYCKOFF משודרג - LOGIC GATES מחמירים
+# חלק 8: WYCKOFF - Logic Gates
 # ============================================================
 @st.cache_data(ttl=3600)
 def get_data(ticker, period="1y"):
@@ -506,17 +456,14 @@ def get_data(ticker, period="1y"):
     return df
 
 def analyze_wyckoff_strict(df):
-    """מנוע ניתוח Logic Gate סדרתי למניעת False Positives."""
     phase = "לא בתהילים ניתוח מובהק"
     score = 0
     alerts = []
     has_sc, has_ar, has_st = False, False, False
     sc_idx, sc_low, ar_high = 0, 0, 0
-
     df['Spread'] = df['High'] - df['Low']
     df['Vol_MA'] = df['Volume'].rolling(20).mean()
     df['Spread_MA'] = df['Spread'].rolling(20).mean()
-
     search_df = df.iloc[-90:]
     for i in range(1, len(search_df)):
         vol = search_df['Volume'].iloc[i]
@@ -525,45 +472,31 @@ def analyze_wyckoff_strict(df):
         low = search_df['Low'].iloc[i]
         high = search_df['High'].iloc[i]
         open_px = search_df['Open'].iloc[i]
-
         if vol > vol_ma * 1.5 and search_df['Spread'].iloc[i] < search_df['Spread_MA'].iloc[i] * 0.8:
             days_ago = len(search_df) - i - 1
             if days_ago < 10:
-                alerts.append(f"⚠️ {days_ago} ימים לאחור: זוהתה ספיגת VSA (מאמץ מחזור גבוה ללא תזוזת מחיר).")
-
+                alerts.append(f"⚠️ {days_ago} ימים לאחור: זוהתה ספיגת VSA")
         if not has_sc:
             if close < open_px and vol > vol_ma * 2.0 and close <= search_df['Close'].iloc[max(0, i-20):i].min():
-                has_sc = True
-                sc_idx = i
-                sc_low = low
-                phase = "SC (Selling Climax) / Phase A"
-                score = 30
+                has_sc = True; sc_idx = i; sc_low = low
+                phase = "SC (Selling Climax) / Phase A"; score = 30
         elif has_sc and not has_ar and (i - sc_idx <= 15):
             if close > open_px and close > search_df['Close'].iloc[i-1]:
-                has_ar = True
-                ar_high = high
-                phase = "AR (Automatic Rally)"
-                score = 40
+                has_ar = True; ar_high = high
+                phase = "AR (Automatic Rally)"; score = 40
         elif has_ar and not has_st:
             if vol < search_df['Volume'].iloc[sc_idx] * 0.75 and abs(low - sc_low)/sc_low < 0.05:
-                has_st = True
-                phase = "ST (Secondary Test) / Phase B"
-                score = 60
+                has_st = True; phase = "ST (Secondary Test) / Phase B"; score = 60
         elif has_st:
             if low < sc_low and close > sc_low:
-                phase = "Phase C (Spring / Shakeout)"
-                score = 80
+                phase = "Phase C (Spring / Shakeout)"; score = 80
             elif low > sc_low and low < search_df['Low'].iloc[i-1] and vol < vol_ma:
-                phase = "LPS (Last Point of Support)"
-                score = 85
+                phase = "LPS (Last Point of Support)"; score = 85
             elif close > ar_high and vol > vol_ma * 1.5:
-                phase = "SOS (Sign of Strength) / Phase D"
-                score = 100
-                has_sc = False
-
+                phase = "SOS (Sign of Strength) / Phase D"; score = 100; has_sc = False
     vd = phase
     vc = "#26a69a" if score >= 80 else "#ffa726" if score >= 40 else "#ef5350"
-    exp = "רצף מוסדי מלא (SC->AR->ST)." if score >= 80 else "ממתין לאישוש תמיכה." if score >= 40 else "אין חתימת VSA."
+    exp = "רצף מוסדי מלא." if score >= 80 else "ממתין לאישוש." if score >= 40 else "אין חתימת VSA."
     return score, phase, exp, list(set(alerts)), vd, vc
 
 def render_gauge(score, verdict, verdict_color):
@@ -572,8 +505,7 @@ def render_gauge(score, verdict, verdict_color):
         title={'text':f"<b>Wyckoff Strict Score</b><br><span style='font-size:0.82em;color:{verdict_color}'>{verdict}</span>"},
         gauge={'axis':{'range':[0,100]}, 'bar':{'color':bc}, 'bgcolor':"#0d1b2a"},
         number={'font':{'color':bc}}))
-    fig.update_layout(height=300, margin=dict(t=80,b=10,l=20,r=20),
-                      paper_bgcolor="#0a1520", font_color="#e0eaf4")
+    fig.update_layout(height=300, margin=dict(t=80,b=10,l=20,r=20), paper_bgcolor="#0a1520", font_color="#e0eaf4")
     return fig
 
 def render_wyckoff_chart(df):
@@ -584,8 +516,7 @@ def render_wyckoff_chart(df):
     colors = ['#ef5350' if row['Open'] > row['Close'] else '#26a69a' for _, row in dc.iterrows()]
     fig.add_trace(go.Bar(x=dc.index, y=dc["Volume"], name="Volume", marker_color=colors), row=2, col=1)
     fig.update_layout(height=450, paper_bgcolor="#0a1520", plot_bgcolor="#0d1b2a",
-                      font_color="#e0eaf4", xaxis_rangeslider_visible=False,
-                      margin=dict(t=10, b=10, l=10, r=10))
+                      font_color="#e0eaf4", xaxis_rangeslider_visible=False, margin=dict(t=10, b=10, l=10, r=10))
     return fig
 
 def screen_wyckoff():
@@ -612,13 +543,20 @@ def screen_wyckoff():
                         for alert in alerts:
                             st.markdown(f"<div style='background:#111b26; border-right:4px solid #ffa726; padding:10px; margin-bottom:10px; border-radius:5px;'>{alert}</div>", unsafe_allow_html=True)
                     else:
-                        st.info("לא נמצאו חריגות Effort vs Result בחלון הקרוב.")
+                        st.info("לא נמצאו חריגות Effort vs Result.")
+                # ML Prediction Probability
+                if st.session_state.use_ml and st.session_state.ml_model is not None:
+                    engine = FactorEngine(BacktestConfig())
+                    factors = engine.compute(df)
+                    df["wyckoff_phase"] = engine.get_wyckoff_phase(df)
+                    cis = engine.composite_cis(factors, df)
+                    st.markdown(f"### 🤖 תחזית מודל: **{cis.iloc[-1]:.1f}** (הסתברות להצלחה מוסדית)")
                 st.plotly_chart(render_wyckoff_chart(df), use_container_width=True)
             else:
                 st.error("לא נמצאו נתונים.")
 
 # ============================================================
-# חלק 9: BACKTEST ENGINE (Wyckoff-Anchored + Risk Profile + Audit Logs + JSON Export)
+# חלק 9: BACKTEST ENGINE (Wyckoff-Anchored + JSON Export)
 # ============================================================
 def calculate_max_drawdown(return_series):
     wealth_index = (1 + return_series).cumprod()
@@ -646,36 +584,24 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period="2y", risk_p
     df = get_data(ticker, period=period)
     if df is None:
         return None, None
-
     engine = FactorEngine(BacktestConfig(period=period))
     factors = engine.compute(df)
-    df['cis_score'] = engine.composite_cis(factors, df)
     df['wyckoff_phase'] = engine.get_wyckoff_phase(df)
+    df['cis_score'] = engine.composite_cis(factors, df)
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
-
-    positions = []
-    audit_logs = []
-    in_position = False
-    entry_price = 0
-    entry_phase = ""
-    entry_date = None
-    peak_price = 0
-
+    positions = []; audit_logs = []
+    in_position = False; entry_price = 0; entry_phase = ""; entry_date = None; peak_price = 0
     for i in range(len(df)):
         current_phase = df['wyckoff_phase'].iloc[i]
         current_cis = df['cis_score'].iloc[i]
         current_price = df['Close'].iloc[i]
-
         if not in_position:
             phase_allowed = check_phase_entry_allowed(current_phase, risk_profile)
             score_allowed = current_cis >= threshold
             if phase_allowed and score_allowed:
-                positions.append(1)
-                in_position = True
-                entry_price = current_price
-                entry_phase = current_phase
-                entry_date = df.index[i]
-                peak_price = current_price
+                positions.append(1); in_position = True
+                entry_price = current_price; entry_phase = current_phase
+                entry_date = df.index[i]; peak_price = current_price
             else:
                 positions.append(0)
         else:
@@ -687,83 +613,45 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period="2y", risk_p
                 is_win = trade_return > 0
                 max_dd = (peak_price - min(entry_price, exit_price)) / peak_price if peak_price > 0 else 0
                 audit_logs.append({
-                    "entry_date": entry_date.strftime("%Y-%m-%d"),
-                    "exit_date": df.index[i].strftime("%Y-%m-%d"),
-                    "phase_at_entry": entry_phase,
-                    "entry_price": round(entry_price, 2),
-                    "exit_price": round(exit_price, 2),
-                    "return_pct": round(trade_return * 100, 2),
-                    "win": is_win,
-                    "max_drawdown_pct": round(max_dd * 100, 2)
+                    "entry_date": entry_date.strftime("%Y-%m-%d"), "exit_date": df.index[i].strftime("%Y-%m-%d"),
+                    "phase_at_entry": entry_phase, "entry_price": round(entry_price, 2),
+                    "exit_price": round(exit_price, 2), "return_pct": round(trade_return * 100, 2),
+                    "win": is_win, "max_drawdown_pct": round(max_dd * 100, 2)
                 })
-                in_position = False
-                entry_price = 0
-                entry_phase = ""
-                entry_date = None
-                peak_price = 0
+                in_position = False; entry_price = 0; entry_phase = ""; entry_date = None; peak_price = 0
             else:
                 positions.append(1)
                 if current_price > peak_price:
                     peak_price = current_price
-
     if in_position:
         exit_price = df['Close'].iloc[-1]
         trade_return = (exit_price - entry_price) / entry_price
         is_win = trade_return > 0
         max_dd = (peak_price - min(entry_price, exit_price)) / peak_price if peak_price > 0 else 0
         audit_logs.append({
-            "entry_date": entry_date.strftime("%Y-%m-%d"),
-            "exit_date": df.index[-1].strftime("%Y-%m-%d"),
-            "phase_at_entry": entry_phase,
-            "entry_price": round(entry_price, 2),
-            "exit_price": round(exit_price, 2),
-            "return_pct": round(trade_return * 100, 2),
-            "win": is_win,
-            "max_drawdown_pct": round(max_dd * 100, 2)
+            "entry_date": entry_date.strftime("%Y-%m-%d"), "exit_date": df.index[-1].strftime("%Y-%m-%d"),
+            "phase_at_entry": entry_phase, "entry_price": round(entry_price, 2),
+            "exit_price": round(exit_price, 2), "return_pct": round(trade_return * 100, 2),
+            "win": is_win, "max_drawdown_pct": round(max_dd * 100, 2)
         })
-
     df['Position'] = pd.Series(positions, index=df.index[:len(positions)]).shift(1).fillna(0)
     df['Strategy_Return'] = df['Position'] * df['Daily_Return']
     df['Cum_Strategy'] = (1 + df['Strategy_Return']).cumprod() - 1
     df['Cum_Baseline'] = (1 + df['Daily_Return']).cumprod() - 1
-
     audit_df = pd.DataFrame(audit_logs) if audit_logs else pd.DataFrame()
     return df, audit_df
-
-class NpEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, pd.Timestamp):
-            return obj.strftime("%Y-%m-%d")
-        return super(NpEncoder, self).default(obj)
 
 def screen_backtest():
     st.markdown("""<div class="header-box composite" style="background:linear-gradient(135deg,#121a24,#1a2636);border:1px solid #2a4a6a;">
     <h2>📊 WYCKOFF-ANCHORED BACKTEST ENGINE</h2>
     <p>סימולציה מבוססת שלבים מבניים. כניסות רק בפאזות איסוף/פריצה מוסדיות.</p></div>""",unsafe_allow_html=True)
     render_active_ai_selector_widget("backtest_screen")
-
     col_r1, col_r2 = st.columns([1, 2])
     with col_r1:
-        risk_profile = st.selectbox(
-            "🎯 Risk Profile:",
-            ["Aggressive", "Balanced", "Conservative"],
-            index=1,
-            key="risk_profile_selector"
-        )
+        risk_profile = st.selectbox("🎯 Risk Profile:", ["Aggressive", "Balanced", "Conservative"], index=1, key="risk_profile_selector")
     with col_r2:
-        risk_desc = {
-            "Aggressive": "כניסות מוקדמות ב-Spring (Phase C). תשואה גבוהה, סיכון מוגבר.",
-            "Balanced": "כניסות רק מ-SOS/LPS (Phase D). איזון מיטבי.",
-            "Conservative": "מחכה לאישור Breakout (Phase E). סיכון נמוך, פחות עסקאות."
-        }
+        risk_desc = {"Aggressive": "Phase C ומעלה", "Balanced": "Phase D ומעלה", "Conservative": "Phase E בלבד"}
         st.info(risk_desc[risk_profile])
-
     c1, c2, c3 = st.columns([2, 1.5, 1])
     with c1:
         ticker = st.text_input("סמל לבדיקה:", "COST", key="bt_ticker")
@@ -772,43 +660,24 @@ def screen_backtest():
     with c3:
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
     run_btn = st.button("▶ הרץ סימולציית Wyckoff", use_container_width=True, type="primary")
-
     if run_btn:
-        with st.spinner(f"מריץ Backtest מעוגן Wyckoff עם פרופיל {risk_profile} עבור {ticker.upper()}..."):
-            bt_df, audit_df = run_wyckoff_anchored_backtest(
-                ticker.upper(),
-                use_ai=st.session_state.use_ml,
-                threshold=bt_threshold,
-                risk_profile=risk_profile
-            )
+        with st.spinner(f"מריץ Backtest מעוגן Wyckoff..."):
+            bt_df, audit_df = run_wyckoff_anchored_backtest(ticker.upper(), st.session_state.use_ml, bt_threshold, risk_profile=risk_profile)
             if bt_df is None:
-                st.error("שגיאה במשיכת הנתונים.")
-                return
-
-            # Metrics
-            strat_ret = bt_df['Cum_Strategy'].iloc[-1]
-            base_ret = bt_df['Cum_Baseline'].iloc[-1]
-            strat_dd = calculate_max_drawdown(bt_df['Strategy_Return'])
-            base_dd = calculate_max_drawdown(bt_df['Daily_Return'])
-            strat_sharpe = calculate_sharpe_ratio(bt_df['Strategy_Return'])
-            base_sharpe = calculate_sharpe_ratio(bt_df['Daily_Return'])
+                st.error("שגיאה במשיכת הנתונים."); return
+            strat_ret = bt_df['Cum_Strategy'].iloc[-1]; base_ret = bt_df['Cum_Baseline'].iloc[-1]
+            strat_dd = calculate_max_drawdown(bt_df['Strategy_Return']); base_dd = calculate_max_drawdown(bt_df['Daily_Return'])
+            strat_sharpe = calculate_sharpe_ratio(bt_df['Strategy_Return']); base_sharpe = calculate_sharpe_ratio(bt_df['Daily_Return'])
             trades_count = len(audit_df)
             wins_count = len(audit_df[audit_df['win'] == True]) if trades_count > 0 else 0
             win_rate = wins_count / trades_count if trades_count > 0 else 0
             avg_cis = bt_df['cis_score'].mean()
             dominant_phase = bt_df['wyckoff_phase'].value_counts().index[0] if not bt_df['wyckoff_phase'].empty else "N/A"
-
-            # Summary metrics
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            with col_m1:
-                st.metric("מס' עסקאות", trades_count)
-            with col_m2:
-                st.metric("Win Rate", f"{win_rate:.1%}" if trades_count > 0 else "N/A")
-            with col_m3:
-                st.metric("ממוצע CIS", f"{avg_cis:.1f}")
-            with col_m4:
-                st.metric("פאזה דומיננטית", dominant_phase[:25])
-
+            col_m1.metric("מס' עסקאות", trades_count)
+            col_m2.metric("Win Rate", f"{win_rate:.1%}" if trades_count > 0 else "N/A")
+            col_m3.metric("ממוצע CIS", f"{avg_cis:.1f}")
+            col_m4.metric("פאזה דומיננטית", dominant_phase[:25])
             st.markdown("### 📊 דוח ביצועים")
             metrics_data = {
                 "מדד": ["Total Return", "Max Drawdown", "Sharpe Ratio"],
@@ -817,100 +686,39 @@ def screen_backtest():
                 "Alpha": [f"{(strat_ret - base_ret):.2%}", f"{(strat_dd - base_dd):.2%}", f"{(strat_sharpe - base_sharpe):.2f}"]
             }
             st.dataframe(pd.DataFrame(metrics_data), use_container_width=True, hide_index=True)
-
-            # Equity curve
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'],
-                                     name=f'Wyckoff Strategy ({risk_profile})',
-                                     line=dict(color='#00ff00', width=2.5)))
-            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'],
-                                     name='Baseline (Buy & Hold)',
-                                     line=dict(color='#888888', width=2, dash='dot')))
-            out_of_market = bt_df[bt_df['Position'] == 0]
-            if not out_of_market.empty:
-                fig.add_trace(go.Scatter(x=out_of_market.index,
-                                         y=bt_df.loc[out_of_market.index, 'Cum_Strategy'],
-                                         mode='markers', name='Cash', marker=dict(color='red', size=4, symbol='x')))
-            fig.update_layout(title=f"עקומת Wyckoff-Anchored: {risk_profile} לעומת השוק",
-                              template="plotly_dark", hovermode="x unified",
-                              legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], name=f'Wyckoff Strategy ({risk_profile})', line=dict(color='#00ff00', width=2.5)))
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], name='Baseline', line=dict(color='#888888', width=2, dash='dot')))
+            out = bt_df[bt_df['Position'] == 0]
+            if not out.empty:
+                fig.add_trace(go.Scatter(x=out.index, y=bt_df.loc[out.index, 'Cum_Strategy'], mode='markers', name='Cash', marker=dict(color='red', size=4, symbol='x')))
+            fig.update_layout(title=f"עקומת Wyckoff-Anchored: {risk_profile} לעומת השוק", template="plotly_dark", hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig, use_container_width=True)
-
-            # Audit Logs
             st.markdown("---")
             st.markdown("### 📋 Audit Logs – יומן עסקאות")
             if not audit_df.empty:
                 for _, row in audit_df.iterrows():
                     cls = "win" if row['win'] else "loss"
                     emoji = "✅" if row['win'] else "❌"
-                    st.markdown(f"""
-                    <div class="audit-row {cls}">
-                        <b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>
-                        פאזה: {row['phase_at_entry']} | כניסה: ${row['entry_price']} | יציאה: ${row['exit_price']}<br>
-                        תשואה: {row['return_pct']}% | DD מקסימלי: {row['max_drawdown_pct']}%
-                    </div>
-                    """, unsafe_allow_html=True)
-                wins = len(audit_df[audit_df['win'] == True])
-                losses = len(audit_df[audit_df['win'] == False])
-                st.markdown(f"""
-                <div style="background:#111b26; padding:15px; border-radius:8px; margin-top:15px;">
-                    <b>סיכום:</b> ✅ {wins} ניצחונות | ❌ {losses} הפסדים | Win Rate: <b>{wins/(wins+losses)*100:.1f}%</b>
-                </div>
-                """, unsafe_allow_html=True)
+                    st.markdown(f"""<div class="audit-row {cls}"><b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>פאזה: {row['phase_at_entry']} | כניסה: ${row['entry_price']} | יציאה: ${row['exit_price']}<br>תשואה: {row['return_pct']}% | DD מקסימלי: {row['max_drawdown_pct']}%</div>""", unsafe_allow_html=True)
+                wins = len(audit_df[audit_df['win'] == True]); losses = len(audit_df[audit_df['win'] == False])
+                st.markdown(f"""<div style="background:#111b26; padding:15px; border-radius:8px; margin-top:15px;"><b>סיכום:</b> ✅ {wins} ניצחונות | ❌ {losses} הפסדים | Win Rate: <b>{wins/(wins+losses)*100:.1f}%</b></div>""", unsafe_allow_html=True)
             else:
                 st.info("לא בוצעו עסקאות בתקופה.")
-
             # JSON Export
             st.markdown("---")
             st.markdown("### 📤 ייצוא ניתוח JSON ליועץ AI")
-            # Build JSON structure
             export_dict = {
-                "config": {
-                    "ticker": ticker.upper(),
-                    "risk_profile": risk_profile,
-                    "cis_threshold": bt_threshold,
-                    "use_ai": st.session_state.use_ml,
-                    "period": "2y",
-                    "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                },
-                "summary": {
-                    "total_return_strategy": round(strat_ret * 100, 2),
-                    "total_return_baseline": round(base_ret * 100, 2),
-                    "alpha": round((strat_ret - base_ret) * 100, 2),
-                    "max_drawdown_strategy": round(strat_dd * 100, 2),
-                    "max_drawdown_baseline": round(base_dd * 100, 2),
-                    "sharpe_strategy": round(strat_sharpe, 2),
-                    "sharpe_baseline": round(base_sharpe, 2),
-                    "num_trades": trades_count,
-                    "win_rate": round(win_rate * 100, 1),
-                    "avg_cis": round(avg_cis, 1),
-                    "dominant_phase": dominant_phase
-                },
+                "config": {"ticker": ticker.upper(), "risk_profile": risk_profile, "cis_threshold": bt_threshold, "use_ai": st.session_state.use_ml, "period": "2y", "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                "summary": {"total_return_strategy": round(strat_ret * 100, 2), "total_return_baseline": round(base_ret * 100, 2), "alpha": round((strat_ret - base_ret) * 100, 2), "max_drawdown_strategy": round(strat_dd * 100, 2), "max_drawdown_baseline": round(base_dd * 100, 2), "sharpe_strategy": round(strat_sharpe, 2), "sharpe_baseline": round(base_sharpe, 2), "num_trades": trades_count, "win_rate": round(win_rate * 100, 1), "avg_cis": round(avg_cis, 1), "dominant_phase": dominant_phase},
                 "trades": audit_df.to_dict(orient="records") if not audit_df.empty else [],
-                "daily_data": []
+                "daily_data": [{"date": idx.strftime("%Y-%m-%d"), "close": round(row['Close'], 2), "cis_score": row['cis_score'], "phase": row['wyckoff_phase'], "position": int(row['Position']), "daily_return": round(row['Daily_Return'] * 100, 4)} for idx, row in bt_df.iterrows()]
             }
-            # Add daily data with relevant fields
-            for idx, row in bt_df.iterrows():
-                export_dict["daily_data"].append({
-                    "date": idx.strftime("%Y-%m-%d"),
-                    "close": round(row['Close'], 2),
-                    "cis_score": row['cis_score'],
-                    "phase": row['wyckoff_phase'],
-                    "position": int(row['Position']),
-                    "daily_return": round(row['Daily_Return'] * 100, 4)
-                })
-
             json_str = json.dumps(export_dict, cls=NpEncoder, ensure_ascii=False, indent=2)
-            st.download_button(
-                label="📥 הורד JSON לניתוח",
-                data=json_str,
-                file_name=f"wyckoff_backtest_{ticker.upper()}_{risk_profile.lower()}.json",
-                mime="application/json",
-                use_container_width=True
-            )
+            st.download_button("📥 הורד JSON לניתוח", json_str, f"wyckoff_backtest_{ticker.upper()}_{risk_profile.lower()}.json", "application/json", use_container_width=True)
 
 # ============================================================
-# חלק 10: סקרנר וקונברגנציה סקטוריאלית
+# חלק 10: סקרנר
 # ============================================================
 def get_sector_convergence(ticker, engine):
     target_sector = None
@@ -939,7 +747,6 @@ def screen_scanner():
         scan_limit = st.slider("כמות מניות:", 5, len(chosen_universe), min(20, len(chosen_universe)), step=5)
     with col_z:
         show_all = st.checkbox("הצג הכל", value=True)
-    
     if st.button("🚀 התחל סקירה מוסדית", use_container_width=True, type="primary"):
         results = []; progress_bar = st.progress(0); status_text = st.empty()
         tickers = chosen_universe[:scan_limit]
@@ -952,26 +759,24 @@ def screen_scanner():
                 wyckoff_score, phase, _, _, _, _ = analyze_wyckoff_strict(df)
                 sector_conv = get_sector_convergence(ticker, engine)
                 is_high_conviction = (cis_score >= 65 and sector_conv >= 60 and wyckoff_score >= 60)
-                results.append({
-                    "Ticker": ticker,
-                    "AI Score": cis_score,
-                    "Wyckoff Phase": phase,
-                    "Sector Convergence": round(sector_conv, 1),
-                    "Verdict": "✅ High Conviction" if is_high_conviction else ("Watch" if cis_score >= 60 else "Wait")
-                })
+                results.append({"Ticker": ticker, "AI Score": cis_score, "Wyckoff Phase": phase, "Sector Convergence": round(sector_conv, 1), "Verdict": "✅ High Conviction" if is_high_conviction else ("Watch" if cis_score >= 60 else "Wait")})
             progress_bar.progress((i + 1) / len(tickers)); time.sleep(0.02)
         status_text.text("✅ סקירה הושלמה!"); st.markdown("---")
         if results:
             df_results = pd.DataFrame(results).sort_values(by="AI Score", ascending=False).reset_index(drop=True)
             if not show_all:
                 df_results = df_results[df_results["AI Score"] >= 60]
-            st.success(f"📊 נמצאו {len(df_results)} תוצאות:")
-            st.dataframe(df_results, use_container_width=True)
+            st.success(f"📊 נמצאו {len(df_results)} תוצאות:"); st.dataframe(df_results, use_container_width=True)
+            # ML Prediction Probabilities for top results
+            if st.session_state.use_ml and st.session_state.ml_model is not None:
+                st.markdown("### 🤖 הסתברויות תחזית מודל")
+                for _, row in df_results.head(5).iterrows():
+                    st.markdown(f"**{row['Ticker']}**: {row['AI Score']:.1f}% ({row['Wyckoff Phase']})")
         else:
             st.warning("אין תוצאות.")
 
 # ============================================================
-# חלק 11 & 12: פונקציות עזר ו-ML TRAINER
+# חלק 11 & 12: ML TRAINER (Closed-Loop Wyckoff Learning)
 # ============================================================
 def get_model_summary(model, metadata):
     if isinstance(model, bytes):
@@ -984,23 +789,24 @@ def get_model_summary(model, metadata):
     except AttributeError:
         return {"train_ticker": metadata.get("train_ticker", "?"), "train_acc": metadata.get("train_acc", 0.0),
                 "test_acc": metadata.get("test_acc", 0.0), "period": metadata.get("period", "?"),
-                "slot": metadata.get("slot", "כללי"), "top_factors": [{"name": "לא מדומן", "importance": 0.0}]}
-    top_factors = sorted(zip(SignalDebugger.LABELS.keys(), importances), key=lambda x: x[1], reverse=True)[:5]
+                "slot": metadata.get("slot", "כללי"), "top_factors": []}
+    features = getattr(model, "feature_names_in_", [f"f{i:02d}" for i in range(len(importances))])
+    top_factors = sorted(zip(features, importances), key=lambda x: x[1], reverse=True)[:10]
     return {"train_ticker": metadata.get("train_ticker", "?"), "train_acc": metadata.get("train_acc", 0.0),
             "test_acc": metadata.get("test_acc", 0.0), "period": metadata.get("period", "?"),
             "slot": metadata.get("slot", "כללי"),
-            "top_factors": [{"name": SignalDebugger.LABELS.get(f, f), "importance": imp} for f, imp in top_factors]}
+            "top_factors": [{"name": f, "importance": round(imp, 4)} for f, imp in top_factors]}
 
 def screen_vp():
-    st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2><p>פעיל לחקלקת המרכולת.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2><p>פעיל.</p></div>""",unsafe_allow_html=True)
 def screen_vwap():
-    st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2><p>פעיל לחקלקת המרכולת.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2><p>פעיל.</p></div>""",unsafe_allow_html=True)
 def screen_composite():
     st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2><p>מיוצג בבק-טסט.</p></div>""",unsafe_allow_html=True)
 
 def screen_ml_trainer():
-    st.markdown("""<div class="header-box ml"><h2>🧠 MACHINE LEARNING TRAINER</h2>
-    <p>מנוע אימון סדרתי וייצוא JSON.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box ml"><h2>🧠 WYCKOFF-ANCHORED ML TRAINER</h2>
+    <p>מערכת למידה סגורה: לומדת מ-Audit Logs לחזות הצלחה מוסדית לפי Phase.</p></div>""",unsafe_allow_html=True)
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
     st.markdown("### 📅 ניהול המגרה")
     col1, col2 = st.columns(2)
@@ -1024,10 +830,14 @@ def screen_ml_trainer():
                 td = st.session_state.model_archive[selected_model]
                 mo = td["model"]
                 if isinstance(mo, bytes): mo = pickle.loads(mo)
-                st.session_state.ml_model = mo; st.session_state.ml_metadata = td["metadata"]; st.session_state.use_ml = True
+                st.session_state.ml_model = mo
+                st.session_state.ml_metadata = td["metadata"]
+                st.session_state.phase_encoder = td.get("phase_encoder")
+                st.session_state.use_ml = True
                 st.success("✅ מופעל!"); st.rerun()
     st.markdown("---")
-    st.markdown("### 🚀 אימון מודל")
+    st.markdown("### 🚀 אימון Closed-Loop Wyckoff")
+    st.markdown("המודל לומד לחזות **הצלחת עסקה מוסדית** על בסיס פקטורים טכניים + Phase Encoding.")
     c1, c2, c3, c4 = st.columns([1.5, 1.5, 1, 1])
     with c1:
         train_ticker = st.text_input("סמל לאימון:", "SPY", key="ml_train_ticker")
@@ -1037,41 +847,117 @@ def screen_ml_trainer():
         start_date = st.date_input("מתאריך:", value=datetime(2022, 1, 1))
     with c4:
         end_date = st.date_input("עד תאריך:", value=datetime(2026, 6, 1))
-    
-    if st.button("🚀 התחל למידת מכונה", use_container_width=True, type="primary"):
-        with st.spinner("מאמן מודל..."):
+
+    if st.button("🚀 התחל למידת Wyckoff", use_container_width=True, type="primary"):
+        with st.spinner("מריץ Backtest להפקת Audit Logs..."):
+            # 1. Pull data and run backtest to get audit logs
             df = yf.Ticker(train_ticker.upper()).history(start=start_date, end=end_date)
-            if df is not None and len(df) >= 50:
-                engine = FactorEngine(BacktestConfig())
-                factors = engine.compute(df)
-                target = (df["Close"].shift(-10) / df["Close"] - 1 > 0.02).astype(int)
-                valid_idx = target.notna(); X = factors[valid_idx].copy(); y = target[valid_idx].values
-                split_idx = int(len(X) * 0.8)
-                X_train, X_test, y_train, y_test = X.iloc[:split_idx], X.iloc[split_idx:], y[:split_idx], y[split_idx:]
-                model = RandomForestClassifier(n_estimators=150, max_depth=4, random_state=42, n_jobs=-1)
-                model.fit(X_train, y_train)
-                train_acc = model.score(X_train, y_train)
-                test_acc = model.score(X_test, y_test) if len(X_test) > 0 else 0.0
-                gap = train_acc - test_acc
-                baseline_acc = max(y_test.mean(), 1 - y_test.mean()) if len(y_test) > 0 else 0.0
-                meta = {"train_ticker": train_ticker.upper(), "train_acc": train_acc, "test_acc": test_acc,
-                        "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}", "slot": target_slot}
-                st.session_state.model_archive[target_slot] = {"model": model, "metadata": meta}
-                col_tr, col_te, col_g, col_b = st.columns(4)
-                col_tr.metric("Train", f"{train_acc*100:.1f}%")
-                col_te.metric("Test", f"{test_acc*100:.1f}%")
-                col_g.metric("Gap", f"{gap*100:.1f}%")
-                col_b.metric("Baseline (Random)", f"{baseline_acc*100:.1f}%")
-            else:
-                st.error("אין מספיק נתונים.")
+            if df is None or len(df) < 60:
+                st.error("אין מספיק נתונים."); return
+            df.index = pd.to_datetime(df.index).tz_localize(None)
+            engine = FactorEngine(BacktestConfig())
+            # Run backtest with Balanced profile to get trades
+            bt_df, audit_df = run_wyckoff_anchored_backtest(train_ticker.upper(), use_ai=False, threshold=60, period=f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}", risk_profile="Balanced")
+            if audit_df is None or audit_df.empty:
+                st.error("לא נמצאו עסקאות באימון. נסה תקופה אחרת."); return
+
+            # 2. Prepare dataset from backtest
+            # For each trade entry date, grab the factors and phase at that moment
+            features_list = []
+            labels = []
+            phases = []
+            for _, trade in audit_df.iterrows():
+                entry_dt = pd.Timestamp(trade['entry_date'])
+                if entry_dt in bt_df.index:
+                    row = bt_df.loc[entry_dt]
+                    # Get factors from engine
+                    window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
+                    factors = engine.compute(window_df)
+                    if len(factors) > 0:
+                        feature_row = factors.iloc[-1].to_dict()
+                        feature_row['phase'] = row['wyckoff_phase']
+                        features_list.append(feature_row)
+                        labels.append(1 if trade['win'] else 0)
+                        phases.append(row['wyckoff_phase'])
+
+            if len(features_list) < 5:
+                st.error(f"מעט מדי דגימות ({len(features_list)}). נסה תקופה ארוכה יותר."); return
+
+            # 3. Build feature matrix with phase encoding
+            feature_df = pd.DataFrame(features_list)
+            # Label encode phases
+            le = LabelEncoder()
+            phase_encoded = le.fit_transform(feature_df['phase'].fillna("לא בתהליך איסוף"))
+            phase_dummies = pd.get_dummies(phase_encoded, prefix='phase').astype(int)
+            # Combine with technical factors (exclude non-numeric)
+            tech_factors = feature_df.drop(columns=['phase']).select_dtypes(include=[np.number])
+            X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).fillna(0)
+            y = np.array(labels)
+
+            # 4. Train model
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+            y_train, y_test = y[:split_idx], y[split_idx:]
+            model = RandomForestClassifier(n_estimators=150, max_depth=5, random_state=42, n_jobs=-1)
+            model.fit(X_train, y_train)
+            train_acc = model.score(X_train, y_train)
+            test_acc = model.score(X_test, y_test) if len(X_test) > 0 else 0.0
+            gap = train_acc - test_acc
+            baseline_acc = max(y_test.mean(), 1 - y_test.mean()) if len(y_test) > 0 else 0.0
+
+            # 5. Store model and encoder
+            meta = {"train_ticker": train_ticker.upper(), "train_acc": train_acc, "test_acc": test_acc,
+                    "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}",
+                    "slot": target_slot, "model_type": "Wyckoff-Anchored",
+                    "num_trades": len(features_list), "phase_encoder_classes": list(le.classes_)}
+            st.session_state.model_archive[target_slot] = {"model": model, "metadata": meta, "phase_encoder": le}
+            st.session_state.phase_encoder = le
+            st.session_state.ml_model = model
+            st.session_state.ml_metadata = meta
+            st.session_state.use_ml = True
+
+            # Display results
+            col_tr, col_te, col_g, col_b = st.columns(4)
+            col_tr.metric("Train Acc", f"{train_acc*100:.1f}%")
+            col_te.metric("Test Acc", f"{test_acc*100:.1f}%")
+            col_g.metric("Gap", f"{gap*100:.1f}%")
+            col_b.metric("Baseline", f"{baseline_acc*100:.1f}%")
+            st.markdown(f"**הואומן על {len(features_list)} עסקאות** ({sum(labels)} ניצחונות, {len(labels)-sum(labels)} הפסדים)")
+
+            # 6. Feature Importance
+            st.markdown("---")
+            st.markdown("### 📊 Feature Importance – מה המודל למד?")
+            importances = model.feature_importances_
+            feature_names = X.columns
+            importance_df = pd.DataFrame({"feature": feature_names, "importance": importances}).sort_values("importance", ascending=False).head(15)
+            fig = go.Figure(go.Bar(x=importance_df['importance'], y=importance_df['feature'], orientation='h', marker_color='#7b1fa2'))
+            fig.update_layout(title="Top 15 Feature Importances", template="plotly_dark", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # 7. JSON Export
+            st.markdown("---")
+            st.markdown("### 📤 ייצוא מודל + ניתוח JSON")
+            export_data = {
+                "config": {"ticker": train_ticker.upper(), "slot": target_slot, "start": start_date.strftime("%Y-%m-%d"), "end": end_date.strftime("%Y-%m-%d"), "model_type": "Wyckoff-Anchored", "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                "performance": {"train_accuracy": round(train_acc * 100, 1), "test_accuracy": round(test_acc * 100, 1), "baseline_accuracy": round(baseline_acc * 100, 1), "num_trades_trained": len(features_list), "win_rate": round(sum(labels)/len(labels)*100, 1)},
+                "feature_importance": [{"feature": fn, "importance": round(imp, 4)} for fn, imp in zip(feature_names, importances)],
+                "phase_encoder_mapping": {i: phase for i, phase in enumerate(le.classes_)},
+                "audit_logs_used": audit_df.to_dict(orient="records")
+            }
+            json_str = json.dumps(export_data, cls=NpEncoder, ensure_ascii=False, indent=2)
+            st.download_button("📥 הורד JSON מלא (מודל + Feature Importance)", json_str, f"wyckoff_model_{train_ticker.upper()}.json", "application/json", use_container_width=True)
+
     st.markdown("---")
-    st.markdown("### 📦 דוחות")
+    st.markdown("### 📦 ארכיון מודלים")
     if st.session_state.model_archive:
-        archive_export = {k: {"model": pickle.dumps(v["model"]), "metadata": v["metadata"]} for k, v in st.session_state.model_archive.items()}
-        st.download_button(label="📥 הורד קובץ ארכיון", data=base64.b64encode(pickle.dumps(archive_export)).decode("utf-8"), file_name="batch_archive_v1.txt")
+        for slot_name, data in st.session_state.model_archive.items():
+            meta = data["metadata"]
+            st.markdown(f"**{slot_name}**: {meta.get('model_type', 'ML')} | {meta.get('train_ticker', '?')} | Test: {meta.get('test_acc', 0)*100:.1f}% | {meta.get('num_trades', '?')} עסקאות")
+        archive_export = {k: {"model": pickle.dumps(v["model"]), "metadata": v["metadata"], "phase_encoder": v.get("phase_encoder")} for k, v in st.session_state.model_archive.items()}
+        st.download_button(label="📥 הורד ארכיון מלא", data=base64.b64encode(pickle.dumps(archive_export)).decode("utf-8"), file_name="batch_archive_v1.txt")
 
 # ============================================================
-# ניתוב מסכים
+# ניתוב
 # ============================================================
 routes = {"wyckoff": screen_wyckoff, "vp": screen_vp, "vwap": screen_vwap,
           "composite": screen_composite, "backtest": screen_backtest,
