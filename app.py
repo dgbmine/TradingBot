@@ -115,6 +115,23 @@ h1, h2, h3, h4, h5, h6 { direction: rtl; }
 }
 .hit { color: #26a69a; font-weight: 600; }
 .miss { color: #ef5350; font-weight: 600; }
+.audit-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+.audit-table th {
+    background: #1a2636;
+    color: #26a69a;
+    padding: 8px;
+    border: 1px solid #2a4a6a;
+}
+.audit-table td {
+    padding: 8px;
+    border: 1px solid #2a4a6a;
+    text-align: center;
+}
+.win-row { background: rgba(38, 166, 154, 0.1); }
+.loss-row { background: rgba(239, 83, 80, 0.1); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -404,6 +421,65 @@ class FactorEngine:
         
         return score.round(1).clip(0, 100)
 
+    def get_wyckoff_phase(self, df: pd.DataFrame) -> pd.Series:
+        """מחזיר סדרת Phases עבור כל נקודת זמן."""
+        phases = pd.Series("לא בתהליך איסוף", index=df.index)
+        
+        if len(df) < 40:
+            return phases
+        
+        has_sc, has_ar, has_st = False, False, False
+        sc_idx, sc_low, ar_high = 0, 0, 0
+        
+        for i in range(40, len(df)):
+            window = df.iloc[max(0, i-90):i+1]
+            if len(window) < 40:
+                continue
+                
+            vol_ma = window['Volume'].rolling(20).mean()
+            current_phase = "לא בתהליך איסוף"
+            
+            for j in range(1, len(window)):
+                vol = window['Volume'].iloc[j]
+                vol_ma_j = vol_ma.iloc[j]
+                close = window['Close'].iloc[j]
+                low = window['Low'].iloc[j]
+                high = window['High'].iloc[j]
+                open_px = window['Open'].iloc[j]
+                
+                if not has_sc:
+                    if close < open_px and vol > vol_ma_j * 2.0 and close <= window['Close'].iloc[max(0, j-20):j].min():
+                        has_sc = True
+                        sc_idx = j
+                        sc_low = low
+                        current_phase = "Phase A (SC)"
+                elif has_sc and not has_ar and (j - sc_idx <= 15):
+                    if close > open_px and close > window['Close'].iloc[j-1]:
+                        has_ar = True
+                        ar_high = high
+                        current_phase = "Phase B (AR)"
+                elif has_ar and not has_st:
+                    if vol < window['Volume'].iloc[sc_idx] * 0.75 and abs(low - sc_low)/sc_low < 0.05:
+                        has_st = True
+                        current_phase = "Phase B (ST)"
+                elif has_st:
+                    if low < sc_low and close > sc_low:
+                        current_phase = "Phase C (Spring)"
+                    elif low > sc_low and low < window['Low'].iloc[j-1] and vol < vol_ma_j:
+                        current_phase = "Phase D (LPS)"
+                    elif close > ar_high and vol > vol_ma_j * 1.5:
+                        current_phase = "Phase D (SOS)"
+                        has_sc = False
+                        has_ar = False
+                        has_st = False
+                    elif close > ar_high * 1.02:
+                        current_phase = "Phase E (Breakout)"
+            
+            if i < len(phases):
+                phases.iloc[i] = current_phase
+        
+        return phases
+
 class SignalDebugger:
     LABELS = {
         "f04_absorption": "VSA: Effort vs Result (Absorption)",
@@ -561,7 +637,7 @@ def screen_wyckoff():
                 st.error("לא נמצאו נתונים.")
 
 # ============================================================
-# חלק 9: BACKTEST ENGINE (מנוע Baseline משולב + בורר מנועים)
+# חלק 9: BACKTEST ENGINE (Wyckoff-Anchored + Risk Profile + Audit Logs)
 # ============================================================
 def calculate_max_drawdown(return_series):
     wealth_index = (1 + return_series).cumprod()
@@ -574,112 +650,183 @@ def calculate_sharpe_ratio(return_series, risk_free=0.04):
     std_ret = return_series.std() * np.sqrt(252)
     return mean_ret / std_ret if std_ret > 0 else 0
 
-def run_backtest_with_baseline(ticker, use_ai, threshold, period="2y", selected_engine="Composite Score"):
+def check_phase_entry_allowed(phase, risk_profile):
+    """
+    בודק האם ה-Phase הנוכחי מאפשר כניסה לפי פרופיל הסיכון.
+    Aggressive: Phase C (Spring) ומעלה
+    Balanced: Phase D (SOS/LPS) ומעלה
+    Conservative: Phase E (Breakout) ומעלה
+    """
+    if "לא בתהליך" in phase:
+        return False
+    
+    if risk_profile == "Aggressive":
+        # מאפשר כניסה מ-Phase C ומעלה
+        allowed_phases = ["Phase C", "Phase D", "Phase E", "Spring", "LPS", "SOS", "Breakout"]
+        return any(ap in phase for ap in allowed_phases)
+    elif risk_profile == "Balanced":
+        # מאפשר כניסה רק מ-Phase D ומעלה
+        allowed_phases = ["Phase D", "Phase E", "LPS", "SOS", "Breakout"]
+        return any(ap in phase for ap in allowed_phases)
+    elif risk_profile == "Conservative":
+        # מחכה לאישור Phase E
+        allowed_phases = ["Phase E", "Breakout"]
+        return any(ap in phase for ap in allowed_phases)
+    
+    return False
+
+def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period="2y", risk_profile="Balanced"):
+    """
+    Backtest מעוגן Wyckoff:
+    - מושך נתונים ומחשב פאזות
+    - מתיר כניסות רק בפאזות מתאימות לפי Risk Profile
+    - מייצר Audit Logs
+    """
     df = get_data(ticker, period=period)
     if df is None:
-        return None
+        return None, None
     
     engine = FactorEngine(BacktestConfig(period=period))
     factors = engine.compute(df)
-    
-    # לוגיקת בחירת מנוע: כל מנוע מייצר ציון שונה
-    if selected_engine == "Composite Score":
-        df['signal_score'] = engine.composite_cis(factors, df)
-    elif selected_engine == "Wyckoff":
-        # Wyckoff: שימוש בפונקציית הניתוח הקיימת
-        wyckoff_results = []
-        for i in range(len(df)):
-            if i >= 40:
-                window_df = df.iloc[:i+1]
-                score, _, _, _, _, _ = analyze_wyckoff_strict(window_df)
-                wyckoff_results.append(score)
-            else:
-                wyckoff_results.append(50)  # ערך ניטרלי בהתחלה
-        df['signal_score'] = pd.Series(wyckoff_results, index=df.index)
-    elif selected_engine == "Volume Profile":
-        # Volume Profile: מבוסס על ניתוח נפחי מסחר ורמות תמיכה/התנגדות
-        vol_profile_scores = []
-        for i in range(len(df)):
-            if i >= 20:
-                window = df.iloc[max(0, i-20):i+1]
-                vol_ma = window['Volume'].mean()
-                vol_std = window['Volume'].std()
-                current_vol = df['Volume'].iloc[i]
-                price_position = (df['Close'].iloc[i] - window['Low'].min()) / (window['High'].max() - window['Low'].min()) if (window['High'].max() - window['Low'].min()) > 0 else 0.5
-                
-                # ציון על בסיס מיקום במחיר וניתוח נפח
-                if current_vol > vol_ma + vol_std and price_position > 0.7:
-                    vol_profile_scores.append(80)  # קנייה חזקה
-                elif current_vol > vol_ma + vol_std and price_position < 0.3:
-                    vol_profile_scores.append(20)  # מכירה חזקה
-                elif price_position > 0.6:
-                    vol_profile_scores.append(65)  # מגמת עלייה
-                elif price_position < 0.4:
-                    vol_profile_scores.append(35)  # מגמת ירידה
-                else:
-                    vol_profile_scores.append(50)  # ניטרלי
-            else:
-                vol_profile_scores.append(50)
-        df['signal_score'] = pd.Series(vol_profile_scores, index=df.index)
-    elif selected_engine == "VWAP Deviation":
-        # VWAP Deviation: חישוב סטיית VWAP
-        tp = (df["High"] + df["Low"] + df["Close"]) / 3
-        vwap = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
-        deviation = ((df["Close"] - vwap) / vwap * 100).fillna(0)
-        
-        # המרת סטייה לציון 0-100
-        vwap_scores = 50 + (deviation * 10).clip(-50, 50)  # סטייה של 5% = 50 נקודות
-        df['signal_score'] = vwap_scores.clip(0, 100)
-    else:
-        df['signal_score'] = engine.composite_cis(factors, df)
+    df['cis_score'] = engine.composite_cis(factors, df)
+    df['wyckoff_phase'] = engine.get_wyckoff_phase(df)
     
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
-    df['composite_cis'] = df['signal_score']  # שמירה על תאימות לאחור
     
-    if use_ai:
-        df['Signal'] = np.where(df['signal_score'] >= threshold, 1, 0)
-        df['Position'] = df['Signal'].shift(1).fillna(0)
-    else:
-        df['Position'] = 1
+    # לוגיקת כניסה מותנית Phase
+    positions = []
+    audit_logs = []
+    in_position = False
+    entry_price = 0
+    entry_phase = ""
+    entry_date = None
+    peak_price = 0
+    current_drawdown = 0
+    
+    for i in range(len(df)):
+        current_phase = df['wyckoff_phase'].iloc[i]
+        current_cis = df['cis_score'].iloc[i]
+        current_price = df['Close'].iloc[i]
+        
+        if not in_position:
+            # בדיקת תנאי כניסה
+            phase_allowed = check_phase_entry_allowed(current_phase, risk_profile)
+            score_allowed = current_cis >= threshold
+            
+            if phase_allowed and score_allowed:
+                positions.append(1)
+                in_position = True
+                entry_price = current_price
+                entry_phase = current_phase
+                entry_date = df.index[i]
+                peak_price = current_price
+            else:
+                positions.append(0)
+        else:
+            # בדיקת תנאי יציאה
+            phase_exit = "לא בתהליך" in current_phase
+            
+            if phase_exit or current_cis < threshold - 10:  # Exit threshold
+                positions.append(0)
+                
+                # חישוב תוצאת העסקה
+                exit_price = current_price
+                trade_return = (exit_price - entry_price) / entry_price
+                is_win = trade_return > 0
+                max_dd_during = (peak_price - min(entry_price, exit_price)) / peak_price if peak_price > 0 else 0
+                
+                audit_logs.append({
+                    "Entry Date": entry_date.strftime("%Y-%m-%d") if entry_date else "N/A",
+                    "Exit Date": df.index[i].strftime("%Y-%m-%d"),
+                    "Phase at Entry": entry_phase,
+                    "Entry Price": round(entry_price, 2),
+                    "Exit Price": round(exit_price, 2),
+                    "Return": f"{trade_return:.2%}",
+                    "Win/Loss": "✅ Win" if is_win else "❌ Loss",
+                    "Max DD During": f"{max_dd_during:.2%}"
+                })
+                
+                in_position = False
+                entry_price = 0
+                entry_phase = ""
+                entry_date = None
+                peak_price = 0
+            else:
+                positions.append(1)
+                # עדכון שיא
+                if current_price > peak_price:
+                    peak_price = current_price
+    
+    # סגירת פוזיציה פתוחה בסוף התקופה
+    if in_position:
+        exit_price = df['Close'].iloc[-1]
+        trade_return = (exit_price - entry_price) / entry_price
+        is_win = trade_return > 0
+        max_dd_during = (peak_price - min(entry_price, exit_price)) / peak_price if peak_price > 0 else 0
+        
+        audit_logs.append({
+            "Entry Date": entry_date.strftime("%Y-%m-%d") if entry_date else "N/A",
+            "Exit Date": df.index[-1].strftime("%Y-%m-%d"),
+            "Phase at Entry": entry_phase,
+            "Entry Price": round(entry_price, 2),
+            "Exit Price": round(exit_price, 2),
+            "Return": f"{trade_return:.2%}",
+            "Win/Loss": "✅ Win" if is_win else "❌ Loss",
+            "Max DD During": f"{max_dd_during:.2%}"
+        })
+    
+    df['Position'] = pd.Series(positions + [0] * (len(df) - len(positions)), index=df.index[:len(positions)])
+    df['Position'] = df['Position'].shift(1).fillna(0)
     
     df['Strategy_Return'] = df['Position'] * df['Daily_Return']
     df['Cum_Strategy'] = (1 + df['Strategy_Return']).cumprod() - 1
     df['Cum_Baseline'] = (1 + df['Daily_Return']).cumprod() - 1
-    return df
+    
+    audit_df = pd.DataFrame(audit_logs) if audit_logs else pd.DataFrame()
+    
+    return df, audit_df
 
 def screen_backtest():
     st.markdown("""<div class="header-box composite" style="background:linear-gradient(135deg,#121a24,#1a2636);border:1px solid #2a4a6a;">
-    <h2>📊 ALPHA BACKTEST ENGINE</h2>
-    <p>סימולציה המשווה בין אסטרטגיית ה-AI לבחין השוק (Buy & Hold). בחר מנוע להרצה.</p></div>""",unsafe_allow_html=True)
+    <h2>📊 WYCKOFF-ANCHORED BACKTEST ENGINE</h2>
+    <p>סימולציה מבוססת שלבים מבניים. כניסות רק בפאזות איסוף/פריצה מוסדיות.</p></div>""",unsafe_allow_html=True)
     render_active_ai_selector_widget("backtest_screen")
     
-    # בורר מנועים
-    engine_options = ["Composite Score", "Wyckoff", "Volume Profile", "VWAP Deviation"]
-    selected_engine = st.selectbox(
-        "🎯 בחר מנוע לסימולציה:",
-        engine_options,
-        index=0,
-        key="backtest_engine_selector",
-        help="בחר את מנוע הניתוח שיזין את אותות הקנייה/מכירה"
-    )
+    # בורר Risk Profile
+    col_r1, col_r2 = st.columns([1, 2])
+    with col_r1:
+        risk_profile = st.selectbox(
+            "🎯 Risk Profile:",
+            ["Aggressive", "Balanced", "Conservative"],
+            index=1,
+            key="risk_profile_selector",
+            help="Aggressive: כניסה מ-Phase C | Balanced: Phase D בלבד | Conservative: Phase E מאושר"
+        )
+    with col_r2:
+        risk_descriptions = {
+            "Aggressive": "כניסות מוקדמות ב-Spring (Phase C). תשואה גבוהה, סיכון מוגבר.",
+            "Balanced": "כניסות רק מ-SOS/LPS (Phase D). איזון מיטבי.",
+            "Conservative": "מחכה לאישור Breakout (Phase E). סיכון נמוך, פחות עסקאות."
+        }
+        st.info(risk_descriptions[risk_profile])
     
     c1, c2, c3 = st.columns([2, 1.5, 1])
     with c1:
         ticker = st.text_input("סמל לבדיקה:", "COST", key="bt_ticker")
     with c2:
-        bt_threshold = st.slider("סף הפעלת AI (CIS Threshold)", 50, 95, 65, 
-                                help="ציון מינימלי לכניסה לעסקה")
+        bt_threshold = st.slider("סף ציון CIS לכניסה", 50, 95, 65, 
+                                help="ציון מינימלי לכניסה לעסקה (בנוסף לתנאי הפאזה)")
     with c3:
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
-    run_btn = st.button("▶ הרץ סימולציית אלפא", use_container_width=True, type="primary")
+    run_btn = st.button("▶ הרץ סימולציית Wyckoff", use_container_width=True, type="primary")
     
     if run_btn:
-        with st.spinner(f"מעבד נתונים עם מנוע {selected_engine} ומחשב Baseline עבור {ticker.upper()}..."):
-            bt_df = run_backtest_with_baseline(
+        with st.spinner(f"מריץ Backtest מעוגן Wyckoff עם פרופיל {risk_profile} עבור {ticker.upper()}..."):
+            bt_df, audit_df = run_wyckoff_anchored_backtest(
                 ticker.upper(), 
                 use_ai=st.session_state.use_ml, 
                 threshold=bt_threshold,
-                selected_engine=selected_engine
+                risk_profile=risk_profile
             )
             if bt_df is None:
                 st.error("שגיאה במשיכת הנתונים.")
@@ -691,41 +838,90 @@ def screen_backtest():
                 strat_sharpe = calculate_sharpe_ratio(bt_df['Strategy_Return'])
                 base_sharpe = calculate_sharpe_ratio(bt_df['Daily_Return'])
                 
-                # הדפסת avg_cis
-                avg_cis = bt_df['composite_cis'].mean()
-                st.markdown(f"**📊 ממוצע ציון {selected_engine} בתקופה:** {avg_cis:.1f} "
-                          f"(מודל {'פעיל/מוטה' if avg_cis > 55 else 'אדיש/ניטרלי' if avg_cis < 45 else 'מאוזן'})")
+                # סטטיסטיקות Phase
+                phase_distribution = bt_df['wyckoff_phase'].value_counts()
+                trades_count = len(audit_df) if audit_df is not None and not audit_df.empty else 0
+                wins_count = len(audit_df[audit_df['Win/Loss'] == '✅ Win']) if trades_count > 0 else 0
                 
-                st.markdown(f"### 📊 דוח ביצועים - מנוע {selected_engine}")
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                with col_m1:
+                    st.metric("מס' עסקאות", trades_count)
+                with col_m2:
+                    st.metric("Win Rate", f"{wins_count/trades_count:.1%}" if trades_count > 0 else "N/A")
+                with col_m3:
+                    st.metric("ממוצע CIS", f"{bt_df['cis_score'].mean():.1f}")
+                with col_m4:
+                    dominant_phase = phase_distribution.index[0] if not phase_distribution.empty else "N/A"
+                    st.metric("פאזה דומיננטית", dominant_phase[:20])
+                
+                st.markdown("### 📊 דוח ביצועים")
                 metrics_data = {
                     "מדד": ["Total Return (תשואה)", "Max Drawdown (נב מקסימלי)", "Sharpe Ratio"],
-                    "AI Strategy": [f"{strat_ret:.2%}", f"{strat_dd:.2%}", f"{strat_sharpe:.2f}"],
+                    "Wyckoff Strategy": [f"{strat_ret:.2%}", f"{strat_dd:.2%}", f"{strat_sharpe:.2f}"],
                     "Baseline (B&H)": [f"{base_ret:.2%}", f"{base_dd:.2%}", f"{base_sharpe:.2f}"],
                     "Alpha": [f"{(strat_ret - base_ret):.2%}", f"{(strat_dd - base_dd):.2%}", f"{(strat_sharpe - base_sharpe):.2f}"]
                 }
                 st.dataframe(pd.DataFrame(metrics_data), use_container_width=True, hide_index=True)
                 
+                # גרף השוואה
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], 
-                                        name=f'AI Strategy ({selected_engine})', 
+                                        name=f'Wyckoff Strategy ({risk_profile})', 
                                         line=dict(color='#00ff00', width=2.5)))
                 fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], 
                                         name='Baseline (Buy & Hold)', 
                                         line=dict(color='#888888', width=2, dash='dot')))
                 out_of_market = bt_df[bt_df['Position'] == 0]
-                if not out_of_market.empty and st.session_state.use_ml:
+                if not out_of_market.empty:
                     fig.add_trace(go.Scatter(x=out_of_market.index, 
                                            y=bt_df.loc[out_of_market.index, 'Cum_Strategy'],
                                            mode='markers', 
-                                           name='מזומן (Cash/Kill Switch)', 
+                                           name='מזומן (Cash)', 
                                            marker=dict(color='red', size=4, symbol='x')))
                 fig.update_layout(
-                    title=f"עקומת אלפא: {selected_engine} לעומת השוק",
+                    title=f"עקומת Wyckoff-Anchored: {risk_profile} לעומת השוק",
                     template="plotly_dark",
                     hovermode="x unified", 
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 st.plotly_chart(fig, use_container_width=True)
+                
+                # Audit Logs
+                st.markdown("---")
+                st.markdown("### 📋 Audit Logs - יומן עסקאות")
+                if audit_df is not None and not audit_df.empty:
+                    st.markdown(f"**סה\"כ {len(audit_df)} עסקאות בתקופה**")
+                    
+                    # הצגת הטבלה עם עיצוב
+                    for idx, row in audit_df.iterrows():
+                        is_win = "✅ Win" in row['Win/Loss']
+                        bg_color = "rgba(38, 166, 154, 0.1)" if is_win else "rgba(239, 83, 80, 0.1)"
+                        border_color = "#26a69a" if is_win else "#ef5350"
+                        
+                        st.markdown(f"""
+                        <div style="background:{bg_color}; border-right:4px solid {border_color}; padding:12px; margin-bottom:8px; border-radius:5px;">
+                            <b>כניסה:</b> {row['Entry Date']} | <b>יציאה:</b> {row['Exit Date']}<br>
+                            <b>פאזה:</b> {row['Phase at Entry']} | 
+                            <b>מחיר כניסה:</b> ${row['Entry Price']} → <b>מחיר יציאה:</b> ${row['Exit Price']}<br>
+                            <b>תשואה:</b> {row['Return']} | <b>סטטוס:</b> {row['Win/Loss']} | 
+                            <b>DD מקסימלי:</b> {row['Max DD During']}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    # סיכום Audit
+                    wins = len(audit_df[audit_df['Win/Loss'] == '✅ Win'])
+                    losses = len(audit_df[audit_df['Win/Loss'] == '❌ Loss'])
+                    
+                    st.markdown(f"""
+                    <div style="background:#111b26; padding:15px; border-radius:8px; margin-top:15px;">
+                        <b>סיכום Audit:</b> 
+                        <span style="color:#26a69a;">✅ {wins} ניצחונות</span> | 
+                        <span style="color:#ef5350;">❌ {losses} הפסדים</span> | 
+                        Win Rate: <b>{wins/(wins+losses)*100:.1f}%</b>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.info("לא בוצעו עסקאות בתקופה. יתכן שה-Phase לא אפשר כניסות בפרופיל הסיכון הנבחר.")
 
 # ============================================================
 # חלק 10: סקרנר וקונברגנציה סקטוריאלית
@@ -871,7 +1067,6 @@ def screen_ml_trainer():
                 train_acc = model.score(X_train, y_train)
                 test_acc = model.score(X_test, y_test) if len(X_test) > 0 else 0.0
                 gap = train_acc - test_acc
-                # Baseline (Random)
                 baseline_acc = max(y_test.mean(), 1 - y_test.mean()) if len(y_test) > 0 else 0.0
                 meta = {"train_ticker": train_ticker.upper(), "train_acc": train_acc, "test_acc": test_acc,
                         "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}", "slot": target_slot}
