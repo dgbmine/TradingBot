@@ -610,6 +610,21 @@ def screen_ml_trainer():
             st.session_state.use_ml = True
             
             st.success(f"✅ אימון הושלם בהצלחה! מודל נשמר: {save_path}")
+
+export_data = {
+                "config": {"ticker": train_ticker.upper(), "slot": target_slot},
+                "performance": {"train_accuracy": train_acc, "num_trades": len(features_list), "optimal_th": optimal_th},
+                "feature_importance": [{"feature": fn, "importance": round(imp, 4)} for fn, imp in zip(feature_names, importances)],
+                "audit_logs_used": audit_df.to_dict(orient="records")
+            }
+            json_str = json.dumps(export_data, cls=NpEncoder, ensure_ascii=False, indent=2)
+            st.download_button(
+                "📥 הורד יומן למידה (JSON)", 
+                json_str, 
+                f"learning_{train_ticker.upper()}_{datetime.now().strftime('%Y%m%d')}.json", 
+                "application/json", 
+                use_container_width=True
+            )
             
             c_res1, c_res2, c_res3 = st.columns(3)
             c_res1.metric("דיוק אימון", f"{train_acc*100:.1f}%")
