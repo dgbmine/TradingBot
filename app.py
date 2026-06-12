@@ -152,7 +152,8 @@ def render_active_ai_selector_widget(screen_identifier):
         st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
         if st.button("🔄 סנכרון מהיר מגיטהאב", key=f"sync_git_{screen_identifier}", use_container_width=True):
             if trigger_auto_load_from_file():
-                st.success("✅ סנכרון הושלם בהצלחה!")
+                st.success("✅ סנכרון הושלם בהצלחה! מרענן...")
+                time.sleep(0.8)  # השהייה המאפשרת למשתמש לראות את הודעת ההצלחה
                 st.rerun()
             else: st.error("קובץ ריק או לא נמצא.")
                 
@@ -270,8 +271,20 @@ class FactorEngine:
         if st.session_state.use_ml and st.session_state.ml_model is not None:
             model = st.session_state.ml_model
             if isinstance(model, bytes): model = pickle.loads(model)
-            try: probs = model.predict_proba(factors)[:, 1]
-            except: probs = model.predict(factors)
+            
+            # --- מנגנון יישור פיצ'רים דינמי ---
+            # מגן על המערכת מפני קריסות (ValueError) כשטוענים מודלים שאומנו על מערך פיצ'רים מעט שונה
+            X_pred = factors.copy()
+            expected_features = getattr(model, "feature_names_in_", None)
+            
+            if expected_features is not None:
+                for c in expected_features:
+                    if c not in X_pred.columns:
+                        X_pred[c] = 0 # השלמת פיצ'רים חסרים כדי למנוע קריסה
+                X_pred = X_pred[expected_features] # סידור מדויק לפי סדר האימון
+            
+            try: probs = model.predict_proba(X_pred)[:, 1]
+            except: probs = model.predict(X_pred)
             score = pd.Series(probs * 100, index=factors.index)
         else:
             w = {"f01_liquidity_gap": 3, "f02_volatility_squeeze": 4, "f03_regime": 5, "f04_absorption": 6, "f05_breakout_quality": 3, "f06_cis_weight": 2, "f07_obv_velocity": 5, "f10_temporal_seq": 5, "f14_inst_intent": 6, "f15_mtf": 4, "f18_sector_breadth": 3, "f19_order_flow": 4, "f20_liquidity_sweep": 3, "f22_sr_strength": 2, "f23_gap_structure": 2, "f26_accept_reject": 3, "f28_inst_part": 3, "f29_trend_integrity": 3, "f30_mean_rev": 3, "f31_bear_trap": 2, "f35_struct_break": 2}
@@ -291,9 +304,14 @@ class SignalDebugger:
             model = st.session_state.ml_model
             if isinstance(model, bytes): model = pickle.loads(model)
             importances = getattr(model, "feature_importances_", np.zeros(len(factors.columns)))
-            for i, col in enumerate(factors.columns):
+            
+            # בדיקת ההתאמה גם ב-Debugger
+            expected_features = getattr(model, "feature_names_in_", factors.columns)
+            
+            for i, col in enumerate(expected_features):
                 if col in self.LABELS and importances[i] > 0.01:
-                    res.append({"factor": self.LABELS[col], "impact": importances[i] * (1 if row[col] > 0 else -1) * 100})
+                    val = row[col] if col in row else 0
+                    res.append({"factor": self.LABELS[col], "impact": importances[i] * (1 if val > 0 else -1) * 100})
         else:
             for col, val in row.items():
                 if col in self.LABELS and val != 0: res.append({"factor": self.LABELS[col], "impact": val})
