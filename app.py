@@ -12,6 +12,7 @@ import warnings
 import pickle
 import base64
 import os
+import json
 from sklearn.ensemble import RandomForestClassifier
 from datetime import datetime
 import time
@@ -138,10 +139,9 @@ for k, v in [("mode", "wyckoff"), ("ml_model", None), ("ml_metadata", None), ("u
 
 
 # ============================================================
-# חלק 5: פונקציות תשתית לפענוח וטעינת מודלים (מניעת באגים)
+# חלק 5: פונקציות תשתית לפענוח וטעינת מודלים
 # ============================================================
 def clean_and_unpack_archive(archive_dict):
-    """מוודא שכל המודלים בארכיון עברו דה-סריאליזציה מלאה מאובייקט בייטס"""
     unpacked = {}
     for slot_name, data in archive_dict.items():
         model_obj = data["model"]
@@ -154,7 +154,6 @@ def clean_and_unpack_archive(archive_dict):
     return unpacked
 
 def trigger_auto_load_from_file():
-    """טוען אוטומטית את קובץ הארכיון מתיקיית המודלים המשותפת"""
     file_path = "models/batch_archive_v1.txt"
     if os.path.exists(file_path):
         try:
@@ -174,23 +173,15 @@ def trigger_auto_load_from_file():
 # חלק 6: רכיב ממשק משותף - בורר ה-AI החכם (גלובלי)
 # ============================================================
 def render_active_ai_selector_widget(screen_identifier):
-    """מציג פאנל שליטה חכם ואינטראקטיבי לבחירה והפעלת מודלים ישירות מכל מסך"""
     trigger_auto_load_from_file()
-    
     st.markdown("<div class='widget-panel-ai'>", unsafe_allow_html=True)
     st.markdown("### 🧠 הגדרות מנוע החלטה AI חכם")
-    
     col_a, col_b, col_c = st.columns([2, 1.5, 1])
     
     with col_a:
         if st.session_state.model_archive:
             slots_list = list(st.session_state.model_archive.keys())
-            selected_slot = st.selectbox(
-                "בחר מודל מוסדי פעיל:", 
-                slots_list, 
-                key=f"selector_slot_{screen_identifier}"
-            )
-            
+            selected_slot = st.selectbox("בחר מודל מוסדי פעיל:", slots_list, key=f"selector_slot_{screen_identifier}")
             if st.button("⚡ טען והפעל מודל נבחר", key=f"activate_btn_{screen_identifier}", use_container_width=True):
                 target_data = st.session_state.model_archive[selected_slot]
                 model_instance = target_data["model"]
@@ -200,7 +191,7 @@ def render_active_ai_selector_widget(screen_identifier):
                 st.session_state.ml_model = model_instance
                 st.session_state.ml_metadata = target_data["metadata"]
                 st.session_state.use_ml = True
-                st.success(f"המודל המשויך למשבצת '{selected_slot}' הופעל בהצלחה!")
+                st.success(f"המודל '{selected_slot}' הופעל בהצלחה!")
                 st.rerun()
         else:
             st.info("לא נמצאו מודלים טעונים בזיכרון. אנא עבור ל-ML Trainer לאימון או טעינה.")
@@ -212,15 +203,11 @@ def render_active_ai_selector_widget(screen_identifier):
                 st.success("✅ סנכרון הקובץ מגיטהאב הושלם בהצלחה!")
                 st.rerun()
             else:
-                st.error("קובץ המאגר ריק או לא נמצא בנתיב היעד: models/batch_archive_v1.txt")
+                st.error("קובץ המאגר ריק או לא נמצא.")
                 
     with col_c:
         st.markdown("<div style='margin-top:32px;'></div>", unsafe_allow_html=True)
-        ai_toggle = st.checkbox(
-            "הפעל שימוש ב-AI בחישובים", 
-            value=st.session_state.use_ml, 
-            key=f"checkbox_ai_{screen_identifier}"
-        )
+        ai_toggle = st.checkbox("הפעל שימוש ב-AI", value=st.session_state.use_ml, key=f"checkbox_ai_{screen_identifier}")
         if ai_toggle != st.session_state.use_ml:
             st.session_state.use_ml = ai_toggle
             st.rerun()
@@ -248,11 +235,11 @@ st.markdown("---")
 
 if st.session_state.use_ml and st.session_state.ml_model is not None:
     metadata = st.session_state.ml_metadata or {}
-    acc = metadata.get("train_acc", 0.0)
+    acc = metadata.get("test_acc", metadata.get("train_acc", 0.0))
     train_ticker = metadata.get("train_ticker", "???")
     period = metadata.get("period", "???")
     slot = metadata.get("slot", "כללי")
-    st.info(f"🤖 **מצב AI מופעל באופן גלובלי:** מודל פעיל - {slot} (אומן על {train_ticker}, {period}) | דיוק פנימי: {acc*100:.1f}%")
+    st.info(f"🤖 **מצב AI מופעל באופן גלובלי:** מודל פעיל - {slot} (אומן על {train_ticker}, {period}) | דיוק בדיקה (Test): {acc*100:.1f}%")
 
 
 # ============================================================
@@ -530,10 +517,7 @@ def render_wyckoff_chart(df):
 
 def screen_wyckoff():
     st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF 3.0 STRUCTURAL ENGINE</h2><p>מערכת ניתוח מוסדית המבוססת על חוקי מאמץ מול תוצאה (VSA) וזיהוי שלבי איסוף/פיזור בזמן אמת, בשילוב אינטגרציית מודלים חכמים.</p></div>""",unsafe_allow_html=True)
-    
-    # הוספת הוידג'ט החכם המבוקש ישירות למסך וויקוף לפני החיפוש
     render_active_ai_selector_widget("wyckoff_screen")
-    
     c1, c2 = st.columns([4, 1])
     with c1: ticker = st.text_input("הזן סימול מניה לניתוח מבנה (למשל: NVDA, PLTR, AMZN):", "NVDA", key="wyckoff_ticker_input")
     with c2: 
@@ -610,10 +594,9 @@ def screen_backtest():
 
 
 # ============================================================
-# חלק 12: פונקציות עזר וסיכום מודל (תיקון באג feature_importances_)
+# חלק 12: פונקציות עזר וסיכום מודל
 # ============================================================
 def get_model_summary(model, metadata):
-    """מחלץ בבטחה את חשיבות הפקטורים מהמודל ומונע קריסות של אובייקטי בייטס"""
     if isinstance(model, bytes):
         try:
             model = pickle.loads(model)
@@ -626,6 +609,7 @@ def get_model_summary(model, metadata):
         return {
             "train_ticker": metadata.get("train_ticker", "???"),
             "train_acc": metadata.get("train_acc", 0.0),
+            "test_acc": metadata.get("test_acc", 0.0),
             "period": metadata.get("period", "???"),
             "slot": metadata.get("slot", "כללי"),
             "top_factors": [{"name": "לא זמין - מודל לא מאומן כראוי", "importance": 0.0}]
@@ -635,6 +619,7 @@ def get_model_summary(model, metadata):
     summary = {
         "train_ticker": metadata.get("train_ticker", "???"),
         "train_acc": metadata.get("train_acc", 0.0),
+        "test_acc": metadata.get("test_acc", 0.0),
         "period": metadata.get("period", "???"),
         "slot": metadata.get("slot", "כללי"),
         "top_factors": [{"name": SignalDebugger.LABELS.get(f, f), "importance": imp} for f, imp in top_factors]
@@ -643,10 +628,10 @@ def get_model_summary(model, metadata):
 
 
 # ============================================================
-# חלק 13: מודול MACHINE LEARNING TRAINER & ARCHIVE
+# חלק 13: מודול MACHINE LEARNING TRAINER & ARCHIVE עם Train/Test Split
 # ============================================================
 def screen_ml_trainer():
-    st.markdown("""<div class="header-box ml"><h2>🧠 MACHINE LEARNING TRAINER & ARCHIVE</h2><p>מסך אימון וניהול מודלים מבוססי Random Forest לחלוקה אסטרטגית לפי 3 משבצות סקטוריאליות קבועות.</p></div>""",unsafe_allow_html=True)
+    st.markdown("""<div class="header-box ml"><h2>🧠 MACHINE LEARNING TRAINER & ARCHIVE</h2><p>מנוע אימון מוסדי הכולל פיצול סדרתי (Time-Series Split) להערכת יכולת הכללה וזיהוי Overfitting.</p></div>""",unsafe_allow_html=True)
     
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדדים)", "Commodities (סחורות)"]
     
@@ -656,6 +641,7 @@ def screen_ml_trainer():
         if st.button("🔄 טען מאגר אוטומטית מגיטהאב (Auto-Load)", use_container_width=True, type="primary"):
             if trigger_auto_load_from_file():
                 st.success("✅ כל המודלים נטענו בהצלחה מתוך קובץ הארכיון בגיטהאב!")
+                time.sleep(1)
                 st.rerun()
             else:
                 st.warning("לא נמצא קובץ תקין בנתיב היעד, או שהקובץ ריק.")
@@ -667,7 +653,9 @@ def screen_ml_trainer():
                     decoded = base64.b64decode(encoded_paste.strip().encode("utf-8"))
                     raw_archive = pickle.loads(decoded)
                     st.session_state.model_archive = clean_and_unpack_archive(raw_archive)
-                    st.success("✅ המאגר הידני נטען ופוענח בהצלחה!"); st.rerun()
+                    st.success("✅ המאגר הידני נטען ופוענח בהצלחה!")
+                    time.sleep(1)
+                    st.rerun()
                 except: 
                     st.error("❌ הקוד שהוזן אינו תקין או פגום.")
 
@@ -686,48 +674,76 @@ def screen_ml_trainer():
                 st.session_state.ml_metadata = target_data["metadata"]
                 st.session_state.use_ml = True
                 st.success(f"המודל '{selected_model}' הוגדר בהצלחה כמודל השולט במערכת!")
+                time.sleep(1)
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🚀 אימון מודל סקטוריאלי חדש")
+    st.markdown("### 🚀 אימון מודל סקטוריאלי חדש (הפרדת Train/Test סדרתית)")
     c1, c2, c3, c4 = st.columns([1.5, 1.5, 1, 1])
     with c1: train_ticker = st.text_input("הזן סימול מניה מובילה לאימון (למשל: AMD, COP, IWM):", "SPY", key="ml_train_ticker")
     with c2: target_slot = st.selectbox("שייך למשבצת אסטרטגית (ידרוס מודל קודם במשבצת):", MODEL_SLOTS)
-    with c3: start_date = st.date_input("תאריך תחילת אימון:", value=datetime(2023, 1, 1))
-    with c4: end_date = st.date_input("תאריך סיום אימון:", value=datetime(2023, 12, 31))
+    with c3: start_date = st.date_input("תאריך תחילת אימון:", value=datetime(2022, 1, 1))
+    with c4: end_date = st.date_input("תאריך סיום אימון:", value=datetime(2024, 12, 31))
 
-    if st.button("🚀 התחל תהליך למידת מכונה ושמור למשבצת המוגדרת", use_container_width=True, type="primary"):
-        with st.spinner(f"שואב נתונים ומאמן מודל משבצת '{target_slot}' על בסיס נתוני {train_ticker}..."):
-            df = yf.Ticker(train_ticker.upper()).history(start=start_date, end=end_date)
-            if df is not None and len(df) >= 40:
-                engine = FactorEngine(BacktestConfig())
-                factors = engine.compute(df)
-                target = (df["Close"].shift(-10) / df["Close"] - 1 > 0.02).astype(int)
-                valid_idx = target.notna()
-                X = factors[valid_idx].copy(); y = target[valid_idx].values
-                
-                model = RandomForestClassifier(n_estimators=150, max_depth=4, min_samples_split=50, random_state=42, n_jobs=-1)
-                model.fit(X, y)
-                
-                acc = model.score(X, y)
-                meta = {
-                    "train_ticker": train_ticker.upper(), 
-                    "train_acc": acc, 
-                    "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}", 
-                    "slot": target_slot
-                }
-                
-                st.session_state.model_archive[target_slot] = {"model": model, "metadata": meta}
-                st.session_state.ml_model = model
-                st.session_state.ml_metadata = meta
-                st.session_state.use_ml = True
-                st.success(f"✅ תהליך האימון הושלם בדיוק פנימי של {acc*100:.1f}%. המודל נשמר בהצלחה במשבצת: {target_slot}")
-                st.rerun()
-            else: 
-                st.error("❌ שגיאה: לא נמצאו מספיק נתוני מסחר היסטוריים בטווח התאריכים המבוקש לאימון מודל יציב.")
+    if st.button("🚀 התחל למידת מכונה (Train/Test Split)", use_container_width=True, type="primary"):
+        with st.spinner(f"שואב נתונים, מפצל כרונולוגית ומאמן את מודל משבצת '{target_slot}'..."):
+            try:
+                df = yf.Ticker(train_ticker.upper()).history(start=start_date, end=end_date)
+                if df is not None and len(df) >= 40:
+                    engine = FactorEngine(BacktestConfig())
+                    factors = engine.compute(df)
+                    target = (df["Close"].shift(-10) / df["Close"] - 1 > 0.02).astype(int)
+                    valid_idx = target.notna()
+                    X = factors[valid_idx].copy()
+                    y = target[valid_idx].values
+                    
+                    # חלוקה סדרתית מוסדית: 80% אימון, 20% מבחן (ללא ערבוב למניעת דליפת נתונים מהעתיד)
+                    split_idx = int(len(X) * 0.8)
+                    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+                    y_train, y_test = y[:split_idx], y[split_idx:]
+                    
+                    model = RandomForestClassifier(n_estimators=150, max_depth=4, min_samples_split=50, random_state=42, n_jobs=-1)
+                    model.fit(X_train, y_train)
+                    
+                    train_acc = model.score(X_train, y_train)
+                    test_acc = model.score(X_test, y_test) if len(X_test) > 0 else 0.0
+                    gap = train_acc - test_acc
+                    
+                    meta = {
+                        "train_ticker": train_ticker.upper(), 
+                        "train_acc": train_acc,
+                        "test_acc": test_acc,
+                        "period": f"{start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}", 
+                        "slot": target_slot
+                    }
+                    
+                    st.session_state.model_archive[target_slot] = {"model": model, "metadata": meta}
+                    st.session_state.ml_model = model
+                    st.session_state.ml_metadata = meta
+                    st.session_state.use_ml = True
+                    
+                    st.success(f"✅ אימון הושלם בהצלחה! משבצת: {target_slot}")
+                    
+                    # הצגת התוצאות והגאפ
+                    col_tr, col_te, col_g = st.columns(3)
+                    col_tr.metric("דיוק אימון (Training Set)", f"{train_acc*100:.1f}%")
+                    col_te.metric("דיוק בדיקה (Holdout Set)", f"{test_acc*100:.1f}%")
+                    col_g.metric("פער הכללה (Generalization Gap)", f"{gap*100:.1f}%")
+                    
+                    if gap > 0.10:
+                        st.error(f"⚠️ אזהרת Overfitting: פער של {gap*100:.1f}% בין האימון לבדיקה מעיד על התאמת יתר חמורה. המודל 'משנן' את העבר ולא מחליל היטב את נתוני העתיד.")
+                    elif gap < -0.05:
+                        st.info("ℹ️ הדיוק בבדיקה גבוה מהאימון. לעיתים זה מצביע על כך שתקופת הבדיקה הייתה בעלת מגמה מובהקת וקלה יותר לחיזוי.")
+                    else:
+                        st.success("✅ מודל יציב: פער ההכללה תקין (מתחת ל-10%). המודל הוכיח יכולת ניתוח טובה גם על נתונים שמעולם לא נחשף אליהם.")
+                        
+                else: 
+                    st.error("❌ שגיאה: לא נמצאו מספיק נתוני מסחר היסטוריים בטווח התאריכים המבוקש לאימון מודל יציב.")
+            except Exception as e:
+                st.error(f"⚠️ שגיאה מערכתית במהלך האימון: {str(e)}")
 
     st.markdown("---")
-    st.markdown("### 📤 פעולות ייצוא והפקת דוחות AI")
+    st.markdown("### 📤 פעולות ייצוא והפקת דוחות AI מתקדמים")
     ca, cb = st.columns(2)
     with ca:
         if st.session_state.model_archive:
@@ -749,21 +765,33 @@ def screen_ml_trainer():
                 
     with cb:
         if st.session_state.model_archive:
-            st.markdown("#### 🤖 הפקת דוח התקדמות עבור יועץ ה-AI")
-            if st.button("הפק דוח למידה מפורט ללא שגיאות"):
-                report = "### דוח התקדמות למידה (מעודכן לפי משבצות)" + "\n\n"
+            st.markdown("#### 🤖 הפקת דוח עומק ליועץ ה-AI (JSON)")
+            if st.button("הפק אובייקט דוח מלא"):
+                report_data = []
                 for name, data in st.session_state.model_archive.items():
                     summ = get_model_summary(data['model'], data['metadata'])
                     if "error_summary" in summ:
-                        report += "- **משבצת:** `" + name + "`\n  - שגיאה בחילוץ נתוני המודל.\n\n"
                         continue
-                    report += "- **משבצת:** `" + name + "`\n"
-                    report += "  - **טיקר אימון:** " + str(summ['train_ticker']) + "\n"
-                    report += "  - **תקופה:** " + str(summ['period']) + "\n"
-                    report += "  - **דיוק:** " + f"{summ['train_acc']*100:.1f}%\n"
-                    report += "  - **פקטורים מובילים:** " + ', '.join([f['name'] for f in summ['top_factors'][:3]]) + "\n\n"
-                report += "--- \n*העתק והדבק בצ'אט עם ה-AI.*"
-                st.text_area("📋 טקסט הדו״ח המוסדי מוכן להעתקה:", value=report, height=160)
+                        
+                    train_a = summ.get('train_acc', 0.0)
+                    test_a = summ.get('test_acc', 0.0)
+                    gap = train_a - test_a
+                    
+                    report_data.append({
+                        "Slot": name,
+                        "Asset": summ['train_ticker'],
+                        "Period": summ['period'],
+                        "Metrics": {
+                            "Train_Acc": round(train_a * 100, 1),
+                            "Test_Acc": round(test_a * 100, 1),
+                            "Gap": round(gap * 100, 1),
+                            "Status": "Overfit Warning" if gap > 0.10 else "Stable"
+                        },
+                        "Top_5_Factors_Weights": {f['name']: round(f['importance'], 3) for f in summ['top_factors']}
+                    })
+                    
+                report_str = json.dumps(report_data, indent=2, ensure_ascii=False)
+                st.text_area("📋 העתק את ה-JSON הבא והדבק לבינה המלאכותית לניתוח עומק:", value=report_str, height=250)
 
 
 # ============================================================
@@ -772,14 +800,12 @@ def screen_ml_trainer():
 def screen_scanner():
     st.markdown("""<div class="header-box scanner"><h2>🔎 MARKET SCANNER - סורק שוק מוסדי מתקדמת</h2><p>סריקה מבוססת סקטורים ייעודיים המאפשרת התאמה מלאה ומדויקת בין קבוצת המניות הנבחרת למודל ה-AI הפעיל.</p></div>""",unsafe_allow_html=True)
     
-    # הוספת הוידג'ט החכם המבוקש ישירות למסך הסורק לפני החיפוש והסינון
     render_active_ai_selector_widget("scanner_screen")
     
     st.markdown("### ⚙️ הגדרות סינון ומיקוד לסריקה")
     col_x, col_y, col_z = st.columns([2, 1, 1])
     
     with col_x:
-        # הגולל הבורר המבוקש המאפשר למקד את הסורק בסקטור ספציפי ביחס למודל
         selected_sector_label = st.selectbox(
             "🎯 בחר סקטור / קבוצת מניות להתמקד בה בסריקה:", 
             list(SECTOR_MAP.keys()),
