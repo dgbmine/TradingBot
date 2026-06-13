@@ -1,15 +1,20 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.1 (With Lab Monitor)
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.2
 # ============================================================
 import sys
 import os
+import json
 import pickle
 import time
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from datetime import datetime, timedelta
+
 import streamlit as st
 import plotly.graph_objects as go
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
 
 # מוסיף את התיקייה הנוכחית ל-Path של Python כדי לוודא ש-scout_core יימצא
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +22,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from scout_core import *  # כל הלוגיקה החישובית
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
+
+# ============================================================
+# קבועים ל-Auto Trainer Status
+# ============================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+AUTO_TRAINER_STATUS_FILE = os.path.join(BASE_DIR, "models", "auto_trainer_status.json")
+AUTO_TRAINER_DONE_FLAG = os.path.join(BASE_DIR, "models", "auto_trainer.done")
 
 # ============================================================
 # פונקציות עזר שנשארות בקובץ הראשי (שמירה / טעינה)
@@ -58,6 +70,33 @@ def load_all_research_dfs_from_disk():
                 except:
                     pass
     return archive
+
+def read_auto_trainer_status():
+    default_status = {
+        "state": "idle",
+        "message": "לא רץ כרגע",
+        "progress": 0,
+        "current_slot": "N/A",
+        "updated_at": "N/A",
+        "started_at": "N/A",
+        "finished_at": "N/A",
+    }
+
+    if os.path.exists(AUTO_TRAINER_STATUS_FILE):
+        try:
+            with open(AUTO_TRAINER_STATUS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            default_status.update(data)
+        except:
+            pass
+    elif os.path.exists(AUTO_TRAINER_DONE_FLAG):
+        default_status.update({
+            "state": "completed",
+            "message": "האימון האוטומטי הסתיים",
+            "progress": 100,
+        })
+
+    return default_status
 
 # ============================================================
 # Universe - רשימות המניות
@@ -143,7 +182,25 @@ h1, h2, h3, h4, h5, h6 { direction: rtl; }
 # ============================================================
 @st.cache_data(ttl=3600)
 def get_cached_data(ticker, period="1y", start=None, end=None):
-    return get_data(ticker, period, start, end)
+    try:
+        df = get_data(ticker, period, start, end)
+        if df is not None and not df.empty:
+            return df
+    except Exception:
+        pass
+
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        if start or end:
+            df = ticker_obj.history(start=start, end=end, auto_adjust=False)
+        else:
+            df = ticker_obj.history(period=period or "1y", auto_adjust=False)
+        if df is not None and not df.empty:
+            return df
+    except Exception:
+        pass
+
+    return None
 
 # ============================================================
 # אתחול Session State
@@ -224,70 +281,61 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
     st.info(f"🧠 **מצב AI מופעל:** {metadata.get('slot', 'כללי')} | דיוק OOB אמיתי: {acc*100:.1f}% | 🎯 **ציון סף מומלץ לכניסה:** {rec_th} | מאומן על {tr_count} עסקאות היסטוריות")
 
 # ============================================================
-# מסכים ראשיים (UI בלבד)
+# מסכי עזר
 # ============================================================
-def analyze_wyckoff_strict(df):
-    phase = "לא בתהילים ניתוח מובהק"; score = 0; alerts = []
-    has_sc, has_ar, has_st = False, False, False; sc_idx, sc_low, ar_high = 0, 0, 0
-    df['Spread'] = df['High'] - df['Low']
-    df['Vol_MA'] = df['Volume'].rolling(20).mean()
-    df['Spread_MA'] = df['Spread'].rolling(20).mean()
-    search_df = df.iloc[-90:]
-    for i in range(1, len(search_df)):
-        vol = search_df['Volume'].iloc[i]; vol_ma = search_df['Vol_MA'].iloc[i]; close = search_df['Close'].iloc[i]
-        low = search_df['Low'].iloc[i]; high = search_df['High'].iloc[i]; open_px = search_df['Open'].iloc[i]
-        if vol > vol_ma * 1.5 and search_df['Spread'].iloc[i] < search_df['Spread_MA'].iloc[i] * 0.8:
-            if (len(search_df) - i - 1) < 10: alerts.append(f"⚠️ ספיגת VSA זוהתה")
-        if not has_sc:
-            if close < open_px and vol > vol_ma * 2.0 and close <= search_df['Close'].iloc[max(0, i-20):i].min():
-                has_sc = True; sc_idx = i; sc_low = low; phase = "SC / Phase A"; score = 30
-        elif has_sc and not has_ar and (i - sc_idx <= 15):
-            if close > open_px and close > search_df['Close'].iloc[i-1]:
-                has_ar = True; ar_high = high; phase = "AR"; score = 40
-        elif has_ar and not has_st:
-            if vol < search_df['Volume'].iloc[sc_idx] * 0.75 and abs(low - sc_low)/sc_low < 0.05:
-                has_st = True; phase = "ST / Phase B"; score = 60
-        elif has_st:
-            if low < sc_low and close > sc_low: phase = "Phase C (Spring)"; score = 80
-            elif low > sc_low and low < search_df['Low'].iloc[i-1] and vol < vol_ma: phase = "LPS"; score = 85
-            elif close > ar_high and vol > vol_ma * 1.5: phase = "SOS / Phase D"; score = 100; has_sc = False
-    return score, phase, "", list(set(alerts)), phase, "#26a69a" if score >= 80 else "#ffa726" if score >= 40 else "#ef5350"
-
 def screen_wyckoff():
     st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF 3.0 STRUCTURAL ENGINE</h2></div>""", unsafe_allow_html=True)
     render_active_ai_selector_widget("wyckoff_screen")
+
     c1, c2 = st.columns([4, 1])
-    with c1: ticker = st.text_input("סמל לניתוח:", "NVDA", key="w_ticker")
+    with c1:
+        ticker = st.text_input("סמל לניתוח:", "NVDA", key="w_ticker")
     with c2:
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
         btn = st.button("▶ הרץ ניתוח", use_container_width=True, type="primary")
+
     if btn:
-        with st.spinner("מנתח..."):
+        with st.spinner("מנתח דרך FactorEngine..."):
             df = get_cached_data(ticker.upper())
-            if df is not None:
-                score, phase, _, alerts, _, vc = analyze_wyckoff_strict(df)
-                st.markdown(f"### 📌 סטטוס: **{phase}** (ציון: {score})")
-                if alerts:
-                    for alert in alerts: st.warning(alert)
+            if df is None or df.empty:
+                st.error("אין נתונים.")
+                return
+
+            try:
+                engine = FactorEngine(BacktestConfig())
+                factors = engine.compute(df)
+                phase_series = engine.get_wyckoff_phase(df)
+                cis_series = engine.composite_cis(factors, df)
+
+                if factors is None or factors.empty or cis_series is None or len(cis_series) == 0:
+                    st.warning("לא התקבלה תוצאת פקטורים תקינה מה-Engine.")
+                    return
+
+                current_phase = phase_series.iloc[-1] if hasattr(phase_series, "iloc") else phase_series
+                current_cis = float(cis_series.iloc[-1]) if hasattr(cis_series, "iloc") else float(cis_series)
+
+                st.markdown(f"### 📌 סטטוס: **{current_phase}**")
+                st.metric("Composite CIS", f"{current_cis:.1f}")
+
                 if st.session_state.use_ml and st.session_state.ml_model is not None:
-                    engine = FactorEngine(BacktestConfig())
-                    df["wyckoff_phase"] = engine.get_wyckoff_phase(df)
-                    cis = engine.composite_cis(engine.compute(df), df)
-                    st.markdown(f"### 🤖 תחזית מודל: **{cis.iloc[-1]:.1f}** (הסתברות הצלחה מוסדית)")
-            else: st.error("אין נתונים.")
+                    st.info("המודל הנטען נשמר זמין לשאר המסכים, אך ניתוח ה-Wyckoff כאן מבוצע ישירות דרך FactorEngine בלבד.")
+            except Exception as e:
+                st.error(f"שגיאה בחישוב המנוע: {e}")
 
 def screen_backtest():
     st.markdown("""<div class="header-box composite"><h2>📊 WYCKOFF-ANCHORED BACKTEST ENGINE</h2></div>""", unsafe_allow_html=True)
     render_active_ai_selector_widget("bt_screen")
     col_r1, col_r2 = st.columns([1, 2])
-    with col_r1: risk_profile = st.selectbox("🎯 Risk Profile:", ["Aggressive", "Balanced", "Conservative"], index=1)
-        
+    with col_r1:
+        risk_profile = st.selectbox("🎯 Risk Profile:", ["Aggressive", "Balanced", "Conservative"], index=1)
+
     c1, c2, c3 = st.columns([2, 1.5, 1])
-    with c1: ticker = st.text_input("סמל לבדיקה:", "COST", key="bt_t")
+    with c1:
+        ticker = st.text_input("סמל לבדיקה:", "COST", key="bt_t")
     with c2:
         render_threshold_control("סף ציון CIS (מסונכרן עם ה-AI)", "bt_threshold")
         bt_threshold = st.session_state["bt_threshold"]
-        
+
     if st.button("▶ הרץ סימולציה", use_container_width=True, type="primary"):
         with st.spinner("מריץ..."):
             bt_df, audit_df = run_wyckoff_anchored_backtest(ticker.upper(), st.session_state.use_ml, bt_threshold, period="2y", risk_profile=risk_profile)
@@ -301,30 +349,35 @@ def screen_backtest():
             c_m1.metric("מס' עסקאות", t_count)
             c_m2.metric("Win Rate", f"{w_rate:.1%}" if t_count > 0 else "N/A")
             c_m3.metric("תשואה", f"{s_ret:.2%}")
-            
+
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], name='Wyckoff Strategy', line=dict(color='#00ff00')))
-            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], name='Baseline', line=dict(color='#888888', dash='dot')))
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], name='Wyckoff Strategy'))
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], name='Baseline', line=dict(dash='dot')))
             st.plotly_chart(fig, use_container_width=True)
-            
+
             if not audit_df.empty:
                 st.markdown("### 📋 Audit Logs")
                 for _, row in audit_df.iterrows():
                     cls = "win" if row['win'] else "loss"
                     emoji = "✅" if row['win'] else "❌"
-                    st.markdown(f"""<div class="audit-row {cls}"><b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type', 'N/A')}</div>""", unsafe_allow_html=True)
+                    st.markdown(
+                        f"""<div class="audit-row {cls}"><b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type', 'N/A')}</div>""",
+                        unsafe_allow_html=True
+                    )
 
 def screen_scanner():
     st.markdown("""<div class="header-box scanner"><h2>🔎 MARKET SCANNER</h2></div>""", unsafe_allow_html=True)
     render_active_ai_selector_widget("scan_screen")
-    
+
     c1, c2 = st.columns([2, 1])
-    with c1: chosen_universe = SECTOR_MAP[st.selectbox("📀 בחר סקטור:", list(SECTOR_MAP.keys()), key="scanner_sector")]
-    with c2: scan_limit = st.slider("כמות מניות:", 5, len(chosen_universe), min(10, len(chosen_universe)), step=5)
-        
+    with c1:
+        chosen_universe = SECTOR_MAP[st.selectbox("📀 בחר סקטור:", list(SECTOR_MAP.keys()), key="scanner_sector")]
+    with c2:
+        scan_limit = st.slider("כמות מניות:", 5, len(chosen_universe), min(10, len(chosen_universe)), step=5)
+
     render_threshold_control("סף כניסה (Threshold) לסינון התוצאות:", "scan_threshold")
     scan_th = st.session_state["scan_threshold"]
-    
+
     if st.button("🚀 התחל סריקה", use_container_width=True, type="primary"):
         results = []
         engine = FactorEngine(BacktestConfig())
@@ -338,16 +391,21 @@ def screen_scanner():
                 if score >= scan_th:
                     results.append({"Ticker": ticker, "Score": round(score, 1), "Phase": phase})
             progress.progress((i + 1) / scan_limit)
-            
+
         if results:
             st.success(f"נמצאו {len(results)} מניות שעוברות את רף הציון {scan_th}:")
             st.dataframe(pd.DataFrame(results).sort_values("Score", ascending=False), use_container_width=True)
         else:
             st.warning(f"אף מניה לא חצתה את רף הציון של {scan_th}.")
 
-def screen_vp(): st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2></div>""", unsafe_allow_html=True)
-def screen_vwap(): st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2></div>""", unsafe_allow_html=True)
-def screen_composite(): st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2></div>""", unsafe_allow_html=True)
+def screen_vp():
+    st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2></div>""", unsafe_allow_html=True)
+
+def screen_vwap():
+    st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2></div>""", unsafe_allow_html=True)
+
+def screen_composite():
+    st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2></div>""", unsafe_allow_html=True)
 
 # ============================================================
 # מסך Monitor - צפייה בליבת האימון
@@ -355,7 +413,7 @@ def screen_composite(): st.markdown("""<div class="header-box composite"><h2>�
 def screen_monitor():
     st.markdown("""<div class="header-box monitor"><h2>👁️ UNDER THE HOOD - Lab Monitor</h2>
     <p>פיקוח בזמן אמת על מה שהמכונה לומדת מה-Auto-Trainer, הנתונים שהיא צוברת והפקטורים שמניעים אותה.</p></div>""", unsafe_allow_html=True)
-    
+
     if not st.session_state.model_archive:
         st.warning("אין עדיין מודלים בספרייה. הרץ את auto_trainer.py בשורת הפקודה קודם.")
         if st.button("🔄 רענן מודלים"):
@@ -381,7 +439,7 @@ def screen_monitor():
     c1.metric("דיוק (OOB Score)", f"{meta.get('train_acc', 0)*100:.1f}%")
     c2.metric("סה\"כ עסקאות בבסיס הנתונים", len(df) if not df.empty else 0)
     c3.metric("Threshold מומלץ לכניסה", meta.get('recommended_threshold', 50))
-    
+
     if not df.empty:
         win_rate = df['label'].mean() * 100
         c4.metric("Win Rate היסטורי גולמי", f"{win_rate:.1f}%")
@@ -397,14 +455,13 @@ def screen_monitor():
             importances = model.feature_importances_
             features = model.feature_names_in_
             fi_df = pd.DataFrame({'Feature': features, 'Importance': importances}).sort_values('Importance', ascending=True).tail(10)
-            
+
             fig = go.Figure(go.Bar(
-                x=fi_df['Importance'], 
-                y=fi_df['Feature'], 
-                orientation='h',
-                marker=dict(color='#26a69a')
+                x=fi_df['Importance'],
+                y=fi_df['Feature'],
+                orientation='h'
             ))
-            fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#e0eaf4'))
+            fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("המודל לא מכיל מידע על חשיבות פקטורים.")
@@ -414,12 +471,11 @@ def screen_monitor():
         if not df.empty:
             ticker_counts = df['ticker'].value_counts().head(10)
             fig2 = go.Figure(go.Pie(
-                labels=ticker_counts.index, 
-                values=ticker_counts.values, 
-                hole=0.4,
-                marker=dict(colors=['#3498db', '#9b59b6', '#34495e', '#16a085', '#27ae60', '#f1c40f', '#e67e22', '#e74c3c'])
+                labels=ticker_counts.index,
+                values=ticker_counts.values,
+                hole=0.4
             ))
-            fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)', font=dict(color='#e0eaf4'))
+            fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("אין מספיק נתונים להצגת התפלגות מניות.")
@@ -433,43 +489,48 @@ def screen_monitor():
         st.dataframe(show_df, use_container_width=True)
 
 # ============================================================
-# מסך ML Trainer – עם כפתור אימון אוטומטי מלא
+# מסך ML Trainer – אימון ידני + סטטוס בלבד לאוטו-טריינר
 # ============================================================
 def screen_ml_trainer():
     st.markdown("""<div class="header-box ml"><h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
-    <p>מסך זה מאפשר אימון ידני בודד לבדיקות, אך מומלץ להשתמש באימון האוטומטי המלא למטה.</p></div>""", unsafe_allow_html=True)
-    
+    <p>מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי עבר לקובץ auto_trainer.py וניטורו מתבצע כאן כסטטוס בלבד.</p></div>""", unsafe_allow_html=True)
+
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
     c1, c2, c3 = st.columns(3)
-    with c1: train_ticker = st.text_input("סמל לאימון:", "SPY")
-    with c2: target_slot = st.selectbox("משבצת אסטרטגית:", MODEL_SLOTS)
-    with c3: train_risk = st.selectbox("רמת סיכון לסינון הבק-טסט:", ["Aggressive", "Balanced", "Conservative"])
-        
+    with c1:
+        train_ticker = st.text_input("סמל לאימון:", "SPY")
+    with c2:
+        target_slot = st.selectbox("משבצת אסטרטגית:", MODEL_SLOTS)
+    with c3:
+        train_risk = st.selectbox("רמת סיכון לסינון הבק-טסט:", ["Aggressive", "Balanced", "Conservative"])
+
     c4, c5, c6 = st.columns(3)
-    with c4: start_date = st.date_input("מתאריך:", value=datetime(2020, 1, 1))
-    with c5: end_date = st.date_input("עד תאריך:", value=datetime.today())
+    with c4:
+        start_date = st.date_input("מתאריך:", value=datetime(2020, 1, 1))
+    with c5:
+        end_date = st.date_input("עד תאריך:", value=datetime.today())
     with c6:
         render_threshold_control("סף כניסה בסיסי לשאיבת עסקאות:", "base_threshold")
         base_th = st.session_state["base_threshold"]
-        
+
     if st.button("🚀 התחל למידה רציפה (הוסף לספרייה)", use_container_width=True, type="primary"):
         with st.spinner("שואב עסקאות עבר, מוסיף לספריית הסקטור ומאמן מודל משופר..."):
             df = get_cached_data(train_ticker.upper(), start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
             if df is None or len(df) < 60:
                 st.error("אין מספיק נתונים לחלון הזמן המבוקש.")
                 return
-            
+
             engine = FactorEngine(BacktestConfig())
             bt_df, audit_df = run_wyckoff_anchored_backtest(
                 train_ticker.upper(), use_ai=False, threshold=base_th, period=None,
                 start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'),
                 risk_profile=train_risk
             )
-            
+
             if audit_df is None or audit_df.empty:
                 st.error("לא היו עסקאות בתקופה. נסה להוריד את הסף הבסיסי או לשנות פרופיל סיכון לאגרסיבי.")
                 return
-                
+
             features_list = []
             for _, trade in audit_df.iterrows():
                 entry_dt = pd.Timestamp(trade['entry_date'])
@@ -483,201 +544,111 @@ def screen_ml_trainer():
                         feature_row['ticker'] = train_ticker.upper()
                         feature_row['entry_date'] = trade['entry_date']
                         features_list.append(feature_row)
-                        
+
             if len(features_list) < 3:
                 st.error("מעט מדי עסקאות לאימון. שנה פרמטרים.")
                 return
-                
+
             new_df = pd.DataFrame(features_list)
             os.makedirs("models", exist_ok=True)
             safe_slot_name = clean_filename(target_slot)
             history_path = f"models/training_data_{safe_slot_name}.csv"
-            
+
             if os.path.exists(history_path):
                 hist_df = pd.read_csv(history_path)
                 combined_df = pd.concat([hist_df, new_df], ignore_index=True)
                 combined_df = combined_df.drop_duplicates(subset=['ticker', 'entry_date'], keep='last')
             else:
                 combined_df = new_df
-                
+
             combined_df.to_csv(history_path, index=False)
-            
-            from sklearn.ensemble import RandomForestClassifier
-            from sklearn.preprocessing import LabelEncoder
-            
+
+            if combined_df['label'].nunique() < 2:
+                st.error("צריך לפחות שתי מחלקות שונות כדי לאמן מודל.")
+                return
+
             y = combined_df['label'].values
             le = LabelEncoder()
             phase_encoded = le.fit_transform(combined_df['phase'].fillna("לא בתהליך איסוף"))
             phase_dummies = pd.get_dummies(phase_encoded, prefix='phase').astype(int)
-            
+
             drop_cols = ['phase', 'label', 'ticker', 'entry_date']
             tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns]).select_dtypes(include=[np.number])
             X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).fillna(0)
-            
-            model = RandomForestClassifier(n_estimators=100, max_depth=3, min_samples_leaf=3, oob_score=True, random_state=42, n_jobs=-1)
+
+            model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=3,
+                min_samples_leaf=3,
+                oob_score=True,
+                random_state=42,
+                n_jobs=-1
+            )
             model.fit(X, y)
-            
-            try: train_acc = model.oob_score_
-            except: train_acc = model.score(X, y)
-                
+
+            try:
+                train_acc = model.oob_score_
+            except:
+                train_acc = model.score(X, y)
+
             optimal_th = calculate_optimal_threshold(model, X, y)
             meta = {
-                "train_ticker": "MANUAL_ADDITION", "train_acc": train_acc, "test_acc": train_acc,
-                "slot": target_slot, "model_type": "Wyckoff-Anchored", "num_trades": len(combined_df),
+                "train_ticker": "MANUAL_ADDITION",
+                "train_acc": train_acc,
+                "test_acc": train_acc,
+                "slot": target_slot,
+                "model_type": "Wyckoff-Anchored",
+                "num_trades": len(combined_df),
                 "recommended_threshold": optimal_th
             }
-            
+
             save_path = save_model_to_disk(target_slot, model, meta, le)
             st.session_state.model_archive = load_all_models_from_disk()
             st.session_state.ml_model = model
             st.session_state.ml_metadata = meta
             st.session_state.phase_encoder = le
             st.session_state.use_ml = True
-            
+
             st.success(f"✅ אימון והוספה לספרייה הושלמו בהצלחה! מודל נשמר: {save_path}")
             c_res1, c_res2, c_res3 = st.columns(3)
             c_res1.metric("דיוק OOB (אמיתי)", f"{train_acc*100:.1f}%")
             c_res2.metric("סה\"כ עסקאות בספריית הסקטור", len(combined_df))
             c_res3.metric("🎯 Threshold מומלץ (AI)", optimal_th)
 
-    # ---------- אימון אוטומטי מלא ----------
     st.markdown("---")
-    st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
-    st.markdown("""
-    לחץ על הכפתור כדי לסרוק את כל היקום, לאסוף עסקאות, ולאמן מחדש את כל שלושת המודלים.
-    התהליך עשוי להימשך מספר דקות.
-    """)
+    st.markdown("### 🚦 Auto-Trainer Status")
+    status = read_auto_trainer_status()
 
-    if st.button("🚀 הזנק אימון אוטומטי מלא", type="primary"):
-        log_container = st.empty()
-        progress_bar = st.progress(0)
-        
-        # מגדיר טווח תאריכים: 6 שנים למצב full (או 90 ימים לרבעוני – נשתמש ב-full בתוך ה-UI)
-        end_date_dt = datetime.today()
-        start_date_dt = end_date_dt - timedelta(days=6*365)
-        start_date = start_date_dt.strftime('%Y-%m-%d')
-        end_date = end_date_dt.strftime('%Y-%m-%d')
-        
-        results_summary = {}
-        base_threshold = 50
-        total_sectors = len(TRAINING_UNIVERSE)
-        sector_idx = 0
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("מצב", status.get("state", "idle"))
+    s2.metric("התקדמות", f"{status.get('progress', 0)}%")
+    s3.metric("סקטור נוכחי", status.get("current_slot", "N/A"))
+    s4.metric("עודכן", status.get("updated_at", "N/A"))
 
-        with st.spinner("מאמן את כל הסקטורים... נא להמתין"):
-            for slot, tickers in TRAINING_UNIVERSE.items():
-                sector_idx += 1
-                log_container.info(f"מעבד סקטור: {slot} ({len(tickers)} מניות)")
-                safe_slot_name = clean_filename(slot)
-                history_path = f"models/training_data_{safe_slot_name}.csv"
-                os.makedirs("models", exist_ok=True)
-                
-                features_list = []
-                errors = 0
-                added_trades = 0
-                
-                for i, ticker in enumerate(tickers):
-                    time.sleep(0.3)   # rate limiting
-                    try:
-                        bt_df, audit_df = run_wyckoff_anchored_backtest(
-                            ticker, use_ai=False, threshold=base_threshold,
-                            period=None, start=start_date, end=end_date,
-                            risk_profile="Aggressive"
-                        )
-                        if audit_df is None or audit_df.empty:
-                            continue
-                            
-                        engine = FactorEngine(BacktestConfig())
-                        df = bt_df.copy()
-                        for _, trade in audit_df.iterrows():
-                            entry_dt = pd.Timestamp(trade['entry_date'])
-                            if entry_dt in df.index:
-                                window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
-                                factors = engine.compute(window_df)
-                                if len(factors) > 0:
-                                    feature_row = factors.iloc[-1].to_dict()
-                                    feature_row['phase'] = df.loc[entry_dt]['wyckoff_phase']
-                                    feature_row['label'] = 1 if trade['win'] else 0
-                                    feature_row['ticker'] = ticker
-                                    feature_row['entry_date'] = trade['entry_date']
-                                    features_list.append(feature_row)
-                                    added_trades += 1
-                    except Exception as e:
-                        errors += 1
-                        continue
-                    
-                # מיזוג עם CSV קיים
-                new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
-                if os.path.exists(history_path):
-                    hist_df = pd.read_csv(history_path)
-                    combined_df = pd.concat([hist_df, new_df], ignore_index=True).drop_duplicates(subset=['ticker', 'entry_date'], keep='last')
-                else:
-                    combined_df = new_df
-                    
-                if combined_df.empty:
-                    log_container.warning(f"אין עסקאות לסקטור {slot}. מדלג...")
-                    continue
-                    
-                combined_df.to_csv(history_path, index=False)
-                log_container.write(f"{slot}: {added_trades} עסקאות חדשות נוספו | סה\"כ ספרייה: {len(combined_df)} | שגיאות: {errors}")
-                
-                # אימון מודל
-                y = combined_df['label'].values
-                le = LabelEncoder()
-                phase_encoded = le.fit_transform(combined_df['phase'].fillna("לא בתהליך איסוף"))
-                phase_dummies = pd.get_dummies(phase_encoded, prefix='phase').astype(int)
-                drop_cols = ['phase', 'label', 'ticker', 'entry_date']
-                tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns]).select_dtypes(include=[np.number])
-                X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).fillna(0)
-                
-                model = RandomForestClassifier(n_estimators=100, max_depth=3, min_samples_leaf=3, oob_score=True, random_state=42, n_jobs=-1)
-                model.fit(X, y)
-                try:
-                    train_acc = model.oob_score_
-                except:
-                    train_acc = model.score(X, y)
-                    
-                optimal_th = calculate_optimal_threshold(model, X, y)
-                meta = {
-                    "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
-                    "train_acc": train_acc,
-                    "test_acc": train_acc,
-                    "slot": slot,
-                    "model_type": "Wyckoff-Anchored",
-                    "num_trades": len(combined_df),
-                    "recommended_threshold": optimal_th
-                }
-                save_model_to_disk(slot, model, meta, le)
-                results_summary[slot] = {"tickers": len(tickers), "oob": train_acc*100, "th": optimal_th}
-                
-                # עדכון סרגל התקדמות
-                progress_bar.progress(sector_idx / total_sectors)
-                time.sleep(1)   # הפסקה קטנה בין סקטורים
+    state = status.get("state", "idle")
+    message = status.get("message", "")
 
-        # סיום
-        log_container.success("האימון האוטומטי הסתיים בהצלחה!")
-        progress_bar.progress(1.0)
-        
-        # רענון ארכיון המודלים
+    if state == "completed":
+        st.success(message or "האימון האוטומטי הסתיים בהצלחה.")
+    elif state == "running":
+        st.info(message or "האימון האוטומטי רץ כרגע בקובץ auto_trainer.py.")
+    elif state == "error":
+        st.error(message or "האימון האוטומטי נכשל.")
+    else:
+        st.warning(message or "אין ריצה פעילה כרגע.")
+
+    if st.button("🔄 רענן סטטוס", use_container_width=True):
         st.session_state.model_archive = load_all_models_from_disk()
-        
-        # טבלת סיכום
-        st.markdown("### 📊 סיכום תוצאות האימון")
-        summary_rows = []
-        for slot, data in results_summary.items():
-            summary_rows.append({
-                "סקטור": slot.split()[0],
-                "מניות": data['tickers'],
-                "דיוק OOB (%)": f"{data['oob']:.1f}",
-                "Threshold מומלץ": data['th']
-            })
-        if summary_rows:
-            st.table(pd.DataFrame(summary_rows))
-        else:
-            st.warning("לא נמצאו תוצאות.")
+        st.rerun()
 
 routes = {
-    "wyckoff": screen_wyckoff, "vp": screen_vp, "vwap": screen_vwap,
-    "composite": screen_composite, "backtest": screen_backtest,
-    "ml": screen_ml_trainer, "scanner": screen_scanner, "monitor": screen_monitor
+    "wyckoff": screen_wyckoff,
+    "vp": screen_vp,
+    "vwap": screen_vwap,
+    "composite": screen_composite,
+    "backtest": screen_backtest,
+    "ml": screen_ml_trainer,
+    "scanner": screen_scanner,
+    "monitor": screen_monitor
 }
 routes[st.session_state.mode]()
