@@ -1,5 +1,5 @@
 # ============================================================
-# auto_trainer.py
+# auto_trainer.py (V2 - FIXED & ROBUST)
 # ============================================================
 import os
 import sys
@@ -14,13 +14,13 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 
-# NEW: import yfinance for macro data download
+# Import yfinance for macro data download (not used now, but kept for flexibility)
 try:
     import yfinance as yf
 except ImportError:
     yf = None
 
-# מוסיף את התיקייה הנוכחית ל-Path כדי לוודא ש-scout_core יימצא
+# Ensure scout_core is importable
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
@@ -30,13 +30,67 @@ MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
 DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
 
-# ... (SCAN_UNIVERSE, SECTOR_MAP, TRAINING_UNIVERSE – ללא שינוי) ...
-SCAN_UNIVERSE = list(dict.fromkeys([...]))  # (הרשימה נשארת כפי שהייתה)
-SECTOR_MAP = {...}
-TRAINING_UNIVERSE = {...}
+# --- Universe definitions (identical to your original) ---
+SCAN_UNIVERSE = list(dict.fromkeys([
+    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","JPM","JNJ",
+    "V","UNH","XOM","PG","MA","HD","CVX","MRK","ABBV","PEP",
+    "KO","AVGO","COST","WMT","LLY","TMO","MCD","ACN","BAC","CRM",
+    "NFLX","AMD","ADBE","CSCO","ABT","TXN","NEE","DHR","RTX","QCOM",
+    "HON","NKE","INTC","AMGN","PM","IBM","SBUX","INTU","GS","CAT",
+    "BA","GE","SPGI","AXP","BLK","DE","ISRG","MDLZ","ADI","GILD",
+    "REGN","SYK","ZTS","MMC","AON","TJX","SCHW","CB","USB","WFC",
+    "C","MS","CVS","CI","SLB","EOG","OXY","COP","PSX","VLO",
+    "AMT","PLD","CCI","EQIX","SPG","O","WELL","DLR",
+    "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
+    "PANW","CRWD","FTNT","ZS","DDOG","SNOW","MDB","NET","PLTR",
+    "UBER","ABNB","COIN","SOFI","UPST",
+    "F","GM","RIVN","NIO",
+    "ONTO","KLAC","LRCX","AMAT","MRVL","SMCI","DELL","HPQ",
+    "DIS","CMCSA","RBLX","U","TTWO","EA",
+    "DAL","UAL","AAL","LUV","FDX","UPS","XPO","ODFL",
+    "DKNG","MGM","CZR","RCL","CCL","MAR","HLT"
+]))
 
-# NEW: list of required new features
-REQUIRED_NEW_FEATURES = ["Regime_Filter", "VIX_ZScore", "Relative_Strength"]
+SECTOR_MAP = {
+    "הכול (כל השוק האמריקאי)": SCAN_UNIVERSE,
+    "צמיחה וטכנולוגיה (Growth)": [
+        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
+        "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
+        "PANW","CRWD","FTNT","ZS","DDOG","SNOW","MDB","NET","PLTR",
+        "UBER","ABNB","COIN","SOFI","UPST","ONTO","KLAC","LRCX",
+        "AMAT","MRVL","SMCI","DELL","HPQ","RBLX","U","TTWO","EA"
+    ],
+    "ערך ומדד (Value/Index)": [
+        "BRK-B","JPM","JNJ","V","UNH","PG","MA","HD","MRK","ABBV",
+        "PEP","KO","COST","WMT","LLY","TMO","MCD","ACN","BAC","ABT",
+        "DHR","RTX","HON","NKE","AMGN","PM","IBM","SBUX","GS","CAT",
+        "BA","GE","SPGI","AXP","BLK","DE","ISRG","MDLZ","GILD",
+        "REGN","SYK","ZTS","MMC","AON","TJX","SCHW","CB","USB","WFC",
+        "C","MS","CVS","CI","AMT","PLD","CCI","EQIX","SPG","O",
+        "WELL","DLR","DIS","CMCSA","DAL","UAL","AAL","LUV","FDX",
+        "UPS","XPO","ODFL","DKNG","MGM","CZR","RCL","CCL","MAR","HLT"
+    ],
+    "סחורות ואנרגיה (Commodities)": [
+        "XOM","CVX","SLB","EOG","OXY","COP","PSX","VLO",
+        "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
+        "GLD", "SLV"
+    ]
+}
+
+TRAINING_UNIVERSE = {
+    "Growth (צמיחה)": SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"],
+    "Value/Index (ערך/מדד)": SECTOR_MAP["ערך ומדד (Value/Index)"],
+    "Commodities (סחורות)": SECTOR_MAP["סחורות ואנרגיה (Commodities)"]
+}
+
+# ============================================================
+# NEW FEATURE NAMES – must match FactorEngine.compute() output
+# ============================================================
+REQUIRED_NEW_FEATURES = [
+    "f_macro_spy_bull",    # Regime_Filter
+    "f_macro_vix_zscore",  # VIX_ZScore
+    "f_macro_rel_str"      # Relative_Strength
+]
 
 
 def save_model_to_disk(slot_name, model, metadata, encoder):
@@ -50,7 +104,6 @@ def save_model_to_disk(slot_name, model, metadata, encoder):
 
 
 def write_status(state, message="", progress=0, current_slot="N/A", started_at=None, finished_at=None, error=None):
-    # (ללא שינוי)
     os.makedirs(MODEL_DIR, exist_ok=True)
     payload = {
         "state": state,
@@ -69,7 +122,6 @@ def write_status(state, message="", progress=0, current_slot="N/A", started_at=N
 
 
 def send_webhook(payload):
-    # (ללא שינוי)
     webhook_url = os.getenv("AUTO_TRAINER_WEBHOOK_URL", "").strip()
     if not webhook_url:
         return
@@ -93,23 +145,12 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
     added_trades = 0
     engine = FactorEngine(BacktestConfig())
 
-    # NEW: Download macro data for the entire period
-    macro = None
-    if yf is not None:
-        try:
-            print(f"[{slot}] Downloading SPY and VIX data...")
-            spy = yf.download("SPY", start=start_date, end=end_date, progress=False)["Close"].rename("SPY_Close")
-            vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)["Close"].rename("VIX_Close")
-            macro = pd.concat([spy, vix], axis=1).ffill().bfill()
-            macro.index = pd.to_datetime(macro.index).date  # use date only for merging
-        except Exception as e:
-            print(f"[{slot}] Warning: Could not download macro data: {e}")
-            macro = None
-    else:
-        print(f"[{slot}] yfinance not available, skipping macro data.")
+    # No manual macro download – run_wyckoff_anchored_backtest (via get_data)
+    # already populates spy_close and vix_close in the bt_df.
 
     for ticker in tickers:
         time.sleep(0.2)
+        print(f"  [{slot}] Processing {ticker}...")
         try:
             bt_df, audit_df = run_wyckoff_anchored_backtest(
                 ticker,
@@ -122,34 +163,33 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
             )
 
             if audit_df is None or audit_df.empty:
+                print(f"    -> No trades for {ticker}")
                 continue
 
             df = bt_df.copy()
-            # NEW: merge macro data if available
-            if macro is not None and not df.empty:
-                df["date_key"] = df.index.date
-                df = df.merge(macro, left_on="date_key", right_index=True, how="left")
-                df.drop(columns="date_key", inplace=True)
-                # forward fill any remaining gaps
-                for col in ["SPY_Close", "VIX_Close"]:
-                    if col in df.columns:
-                        df[col] = df[col].ffill().bfill()
+            # The df already contains spy_close and vix_close from get_data,
+            # so FactorEngine.compute will create the macro features.
 
             for _, trade in audit_df.iterrows():
                 entry_dt = pd.Timestamp(trade["entry_date"])
-                if entry_dt in df.index:
-                    window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
-                    factors = engine.compute(window_df)
-                    if len(factors) > 0:
-                        feature_row = factors.iloc[-1].to_dict()
-                        feature_row["phase"] = df.loc[entry_dt]["wyckoff_phase"]
-                        feature_row["label"] = 1 if trade["win"] else 0
-                        feature_row["ticker"] = ticker
-                        feature_row["entry_date"] = trade["entry_date"]
-                        features_list.append(feature_row)
-                        added_trades += 1
-        except Exception:
+                if entry_dt not in df.index:
+                    continue
+                window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
+                factors = engine.compute(window_df)
+                if len(factors) == 0:
+                    continue
+                feature_row = factors.iloc[-1].to_dict()
+                feature_row["phase"] = df.loc[entry_dt]["wyckoff_phase"]
+                feature_row["label"] = 1 if trade["win"] else 0
+                feature_row["ticker"] = ticker
+                feature_row["entry_date"] = trade["entry_date"]
+                features_list.append(feature_row)
+                added_trades += 1
+
+            print(f"    -> OK, total trades now: {added_trades}")
+        except Exception as e:
             errors += 1
+            print(f"    -> ERROR in {ticker}: {e}")
             continue
 
     return features_list, added_trades, errors
@@ -184,6 +224,7 @@ def run_auto_trainer():
 
     try:
         for sector_idx, (slot, tickers) in enumerate(TRAINING_UNIVERSE.items(), start=1):
+            print(f"\n===== Sector {sector_idx}/{total_sectors}: {slot} =====")
             write_status(
                 state="running",
                 message=f"מעבד סקטור: {slot}",
@@ -216,6 +257,7 @@ def run_auto_trainer():
                 combined_df = new_df
 
             if combined_df.empty:
+                print(f"  -> No trades for slot {slot}, skipping.")
                 write_status(
                     state="running",
                     message=f"אין עסקאות לסקטור {slot}, מדלג",
@@ -225,17 +267,21 @@ def run_auto_trainer():
                 )
                 continue
 
-            # NEW: Ensure required new features exist in the combined data
+            # --- VERIFY NEW FEATURES PRESENT ---
             missing_features = [f for f in REQUIRED_NEW_FEATURES if f not in combined_df.columns]
             if missing_features:
-                raise ValueError(
-                    f"חסרים פיצ׳רים חדשים ב־CSV של סקטור {slot}: {missing_features}. "
-                    "ייתכן ש-FactorEngine.compute לא חישב אותם (בדוק נתוני מאקרו / יישום compute)."
+                error_msg = (
+                    f"Missing new features for slot {slot}: {missing_features}. "
+                    "Available columns: " + ", ".join(combined_df.columns)
                 )
+                print(f"  -> {error_msg}")
+                raise ValueError(error_msg)
 
+            print(f"  -> Combined data shape: {combined_df.shape}, features OK")
             combined_df.to_csv(history_path, index=False)
 
             if combined_df["label"].nunique() < 2:
+                print(f"  -> Not enough label diversity, skipping training.")
                 write_status(
                     state="running",
                     message=f"לא מספיק מגוון תוויות בסקטור {slot}, מדלג על אימון",
@@ -245,6 +291,7 @@ def run_auto_trainer():
                 )
                 continue
 
+            # Prepare training data
             y = combined_df["label"].values
             le = LabelEncoder()
             phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
@@ -254,8 +301,12 @@ def run_auto_trainer():
             tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns]).select_dtypes(include=[np.number])
             X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).fillna(0)
 
-            # The new features are numeric → automatically included in X ✅
+            # Check for any remaining NaN (should be none after fillna, but just in case)
+            if X.isnull().any().any():
+                print("  -> Warning: NaN found in training features after fillna, filling with 0 again.")
+                X = X.fillna(0)
 
+            print(f"  -> Training RandomForest on {X.shape[0]} samples, {X.shape[1]} features...")
             model = RandomForestClassifier(
                 n_estimators=100,
                 max_depth=3,
@@ -283,6 +334,7 @@ def run_auto_trainer():
             }
 
             save_model_to_disk(slot, model, meta, le)
+            print(f"  -> Model saved. OOB accuracy: {train_acc*100:.1f}%, recommended threshold: {optimal_th}")
 
             results_summary[slot] = {
                 "tickers": len(tickers),
