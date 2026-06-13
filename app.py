@@ -258,10 +258,10 @@ for k, v in [("mode", "wyckoff"), ("ml_model", None), ("ml_metadata", None), ("u
     if k not in st.session_state:
         st.session_state[k] = v
 
-if "model_archive" not in st.session_state or not st.session_state.model_archive:
+if "model_archive" not in st.session_state:
     st.session_state.model_archive = load_all_models_from_disk()
 
-if "research_archive" not in st.session_state or not st.session_state.research_archive:
+if "research_archive" not in st.session_state:
     st.session_state.research_archive = load_all_research_dfs_from_disk()
 
 # משיכת סף מומלץ מהמודל הפעיל (לשימוש בבוררים השונים)
