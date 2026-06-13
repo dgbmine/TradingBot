@@ -20,16 +20,49 @@ def clean_filename(name):
 
 
 def get_data(ticker, period="1y", start=None, end=None):
+    """
+    Download stock data along with SPY and VIX macro data.
+    Adds 'spy_close' and 'vix_close' columns to the returned DataFrame.
+    """
     try:
+        # Download the requested ticker
         if start is not None and end is not None:
             df = yf.Ticker(ticker).history(start=start, end=end)
         else:
             df = yf.Ticker(ticker).history(period=period)
+
         if df is None or len(df) < 40:
             return None
+
+        # Clean up the index
         df.index = pd.to_datetime(df.index).tz_localize(None)
+
+        # --- Download macro benchmarks (SPY and VIX) ---
+        # Use the same date range as the main ticker
+        if start is not None and end is not None:
+            spy_df = yf.Ticker("SPY").history(start=start, end=end)
+            vix_df = yf.Ticker("^VIX").history(start=start, end=end)
+        else:
+            spy_df = yf.Ticker("SPY").history(period=period)
+            vix_df = yf.Ticker("^VIX").history(period=period)
+
+        # Attach SPY close price
+        if spy_df is not None and not spy_df.empty:
+            spy_df.index = pd.to_datetime(spy_df.index).tz_localize(None)
+            df = df.join(spy_df[['Close']].rename(columns={'Close': 'spy_close'}), how='left')
+        else:
+            df['spy_close'] = np.nan
+
+        # Attach VIX close price
+        if vix_df is not None and not vix_df.empty:
+            vix_df.index = pd.to_datetime(vix_df.index).tz_localize(None)
+            df = df.join(vix_df[['Close']].rename(columns={'Close': 'vix_close'}), how='left')
+        else:
+            df['vix_close'] = np.nan
+
         return df
-    except:
+
+    except Exception:
         return None
 
 
@@ -217,6 +250,8 @@ class FactorEngine:
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         f = pd.DataFrame(index=df.index)
+
+        # Original technical factors
         tp = (df["High"] + df["Low"] + df["Close"]) / 3
         body = (df["Close"] - df["Open"]).abs()
         rng = df["High"] - df["Low"]
@@ -244,11 +279,14 @@ class FactorEngine:
              ((2 * std20) / sma20.replace(0, np.nan)).rolling(20).mean() * 0.75) &
             (atr14 < atr14.rolling(20).mean() * 0.75)
         ).astype(float)
+
+        # Regime filter (old version using stock's own close as fallback)
         spy_slope = (
             df.get("spy_close", df["Close"]).rolling(50).mean().diff(10) /
             df.get("spy_close", df["Close"]).rolling(50).mean().shift(10).replace(0, np.nan)
         )
         f["f03_regime"] = (spy_slope > 0.01).astype(float) - (spy_slope < -0.01).astype(float)
+
         resist = df["High"].rolling(20).max().shift(1)
         f["f05_breakout_quality"] = (
             (df["Close"] > resist) & (df["Close"].rolling(3).mean() > resist.shift(1))
@@ -295,6 +333,36 @@ class FactorEngine:
             (df["Close"] > df["High"].rolling(20).max().shift(1)).astype(float) -
             (df["Close"] < df["Low"].rolling(20).min().shift(1)).astype(float)
         )
+
+        # ====================
+        # MACRO ENRICHMENT
+        # ====================
+        # --- SPY distance from SMA200 (bull/bear regime) ---
+        if 'spy_close' in df.columns:
+            spy_sma200 = df['spy_close'].rolling(200).mean()
+            f['f_macro_spy_dist'] = df['spy_close'] / spy_sma200.replace(0, np.nan) - 1
+            f['f_macro_spy_bull'] = (df['spy_close'] > spy_sma200).astype(float)
+        else:
+            f['f_macro_spy_dist'] = 0.0
+            f['f_macro_spy_bull'] = 0.0
+
+        # --- VIX Z‑Score (21‑day) ---
+        if 'vix_close' in df.columns:
+            vix_ma21 = df['vix_close'].rolling(21).mean()
+            vix_std21 = df['vix_close'].rolling(21).std()
+            f['f_macro_vix_zscore'] = (df['vix_close'] - vix_ma21) / vix_std21.replace(0, np.nan)
+        else:
+            f['f_macro_vix_zscore'] = 0.0
+
+        # --- Relative strength vs SPY (60‑day) ---
+        if 'spy_close' in df.columns:
+            stock_ret60 = df['Close'].pct_change(60)
+            spy_ret60 = df['spy_close'].pct_change(60)
+            # ratio minus 1
+            f['f_macro_rel_str'] = (1 + stock_ret60) / (1 + spy_ret60).replace(0, np.nan) - 1
+        else:
+            f['f_macro_rel_str'] = 0.0
+
         return f.fillna(0)
 
     def composite_cis(self, factors: pd.DataFrame, df: pd.DataFrame = None) -> pd.Series:
