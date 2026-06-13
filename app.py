@@ -1,10 +1,13 @@
 # ============================================================
 # INSTITUTIONAL SCOUT PRO - FINAL UI V10.1 (With Lab Monitor)
 # ============================================================
+import sys
+import os
+# מוסיף את התיקייה הנוכחית ל-Path של Python כדי לוודא ש-scout_core יימצא
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 import plotly.graph_objects as go
-import pandas as pd
-import os
 from scout_core import *
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
