@@ -1,13 +1,11 @@
 # ============================================================
-# auto_trainer.py - SURVIVAL & DIAGNOSTICS EDITION
+# auto_trainer.py - ROBUST CLOUD EDITION
 # ============================================================
 import os
 import sys
 import json
 import time
 import pickle
-import urllib.request
-import logging
 import traceback
 from datetime import datetime, timedelta
 
@@ -25,27 +23,19 @@ except ImportError:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
-# ============================================================
-# הגדרת מערכת הלוגים (נכתב גם למסך וגם לקובץ error.log)
-# ============================================================
+# הגדרת יומן שגיאות מקומי
 LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
-logger = logging.getLogger(__name__)
 
-from scout_core import * # noqa: F401,F403
+def log_message(msg):
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
+
+from scout_core import *
 
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
 DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
 
-# רשימת המניות והסקטורים (נשאר ללא שינוי)
 SCAN_UNIVERSE = list(dict.fromkeys([
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","JPM","JNJ",
     "V","UNH","XOM","PG","MA","HD","CVX","MRK","ABBV","PEP",
@@ -130,24 +120,20 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
     added_trades = 0
     engine = FactorEngine(BacktestConfig())
 
-    # Download macro data safely
     macro = None
     if yf is not None:
         try:
-            logger.info(f"[{slot}] מוריד נתוני מאקרו (SPY, VIX)...")
+            log_message(f"[{slot}] מוריד נתוני מאקרו (SPY, VIX)...")
             spy = yf.download("SPY", start=start_date, end=end_date, progress=False)["Close"].rename("SPY_Close")
             vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)["Close"].rename("VIX_Close")
             macro = pd.concat([spy, vix], axis=1).ffill().bfill()
             macro.index = pd.to_datetime(macro.index).date
-            logger.info(f"[{slot}] נתוני מאקרו ירדו בהצלחה. שורות: {len(macro)}")
         except Exception as e:
-            logger.error(f"[{slot}] כישלון בהורדת נתוני מאקרו: {e}")
+            log_message(f"[{slot}] שגיאת מאקרו: {e}")
             macro = None
-    else:
-        logger.warning(f"[{slot}] ספריית yfinance לא זמינה.")
 
     for i, ticker in enumerate(tickers):
-        time.sleep(0.2)
+        time.sleep(0.3)
         try:
             bt_df, audit_df = run_wyckoff_anchored_backtest(
                 ticker,
@@ -169,7 +155,7 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                 df.drop(columns="date_key", inplace=True)
                 for col in ["SPY_Close", "VIX_Close"]:
                     if col in df.columns:
-                        df[col] = df[col].ffill().bfill().fillna(0) # ניקוי מאסיבי
+                        df[col] = df[col].ffill().bfill().fillna(0)
 
             for _, trade in audit_df.iterrows():
                 entry_dt = pd.Timestamp(trade["entry_date"])
@@ -178,11 +164,16 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                     factors = engine.compute(window_df)
                     
                     if len(factors) > 0:
-                        # ניקוי ערכי אינסוף (Infinity) ו-NaN מתוך הפקטורים
+                        # ניקוי ערכים רעילים שעלולים לקרוס את המודל
                         factors = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
                         feature_row = factors.iloc[-1].to_dict()
                         
-                        feature_row["phase"] = df.loc[entry_dt]["wyckoff_phase"]
+                        raw_phase = df.loc[entry_dt]["wyckoff_phase"]
+                        # הגנה מפני תאריכים כפולים שיוצרים Series במקום ערך בודד
+                        if isinstance(raw_phase, pd.Series):
+                            raw_phase = raw_phase.iloc[-1]
+                            
+                        feature_row["phase"] = raw_phase
                         feature_row["label"] = 1 if trade["win"] else 0
                         feature_row["ticker"] = ticker
                         feature_row["entry_date"] = trade["entry_date"]
@@ -191,17 +182,18 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                         
         except Exception as e:
             errors += 1
-            logger.debug(f"[{slot}] שגיאה בטיפול במניה {ticker}: {e}")
             continue
 
-    logger.info(f"[{slot}] סיום עיבוד. נוספו {added_trades} עסקאות. {errors} שגיאות במניות.")
+    log_message(f"[{slot}] עובד. נוספו {added_trades} עסקאות, {errors} שגיאות במניות.")
     return features_list, added_trades, errors
 
 
 def run_auto_trainer():
-    logger.info("=== התחלת ריצת Auto Trainer ===")
-    os.makedirs(MODEL_DIR, exist_ok=True)
+    # פתיחת יומן חדש
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.write(f"=== התחלת ריצת Auto Trainer: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
 
+    os.makedirs(MODEL_DIR, exist_ok=True)
     if os.path.exists(DONE_FLAG):
         try:
             os.remove(DONE_FLAG)
@@ -217,11 +209,10 @@ def run_auto_trainer():
     end_date = end_date_dt.strftime("%Y-%m-%d")
     base_threshold = 50
     total_sectors = len(TRAINING_UNIVERSE)
-    results_summary = {}
 
     try:
         for sector_idx, (slot, tickers) in enumerate(TRAINING_UNIVERSE.items(), start=1):
-            logger.info(f"מתחיל לעבד סקטור: {slot} ({len(tickers)} מניות)")
+            log_message(f"מתחיל סקטור: {slot}")
             write_status(state="running", message=f"מעבד סקטור: {slot}", progress=int(((sector_idx - 1) / total_sectors) * 100), current_slot=slot, started_at=started_at)
 
             features_list, added_trades, errors = train_sector(
@@ -243,17 +234,15 @@ def run_auto_trainer():
                 combined_df = new_df
 
             if combined_df.empty:
-                logger.warning(f"[{slot}] אין עסקאות בכלל, מדלג על אימון המודל.")
+                log_message(f"[{slot}] אין עסקאות, מדלג.")
                 continue
 
-            # שמירת ה-CSV תמיד
             combined_df.to_csv(history_path, index=False)
 
             if combined_df["label"].nunique() < 2:
-                logger.warning(f"[{slot}] יש רק סוג אחד של תוויות (רק הצלחות או רק כישלונות). המודל לא יכול להתאמן.")
+                log_message(f"[{slot}] אין מספיק גיוון בתוויות לאימון.")
                 continue
 
-            # הכנת הנתונים לאימון תוך ניקוי מוחלט (Sanitization)
             try:
                 y = combined_df["label"].values
                 le = LabelEncoder()
@@ -262,15 +251,12 @@ def run_auto_trainer():
 
                 drop_cols = ["phase", "label", "ticker", "entry_date"]
                 tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns])
-                
-                # ווידוא שאנחנו לוקחים רק מספרים
                 tech_factors = tech_factors.select_dtypes(include=[np.number])
                 
-                # החלפת כל NaN או אינסוף באפס מוחלט לפני שנכנס ל-ML
                 X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1)
                 X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-                logger.info(f"[{slot}] מאמן RandomForest. כמות דגימות: {len(X)}, פיצ'רים: {X.shape[1]}")
+                log_message(f"[{slot}] מאמן מודל על {len(X)} עסקאות.")
 
                 model = RandomForestClassifier(n_estimators=100, max_depth=3, min_samples_leaf=3, oob_score=True, random_state=42, n_jobs=-1)
                 model.fit(X, y)
@@ -288,22 +274,22 @@ def run_auto_trainer():
                 }
 
                 save_model_to_disk(slot, model, meta, le)
-                logger.info(f"[{slot}] מודל נשמר. OOB: {train_acc*100:.1f}%, סף מומלץ: {optimal_th}")
+                log_message(f"[{slot}] אימון הסתיים בהצלחה. סף מומלץ: {optimal_th}")
 
             except Exception as e:
-                logger.error(f"[{slot}] שגיאה קריטית בזמן בניית המטריצה או אימון המודל:\n{traceback.format_exc()}")
-                continue # מדלג לסקטור הבא במקום לקרוס
+                log_message(f"[{slot}] שגיאת מודל: {traceback.format_exc()}")
+                continue
 
-        # סיום הריצה
         finished_at = datetime.now().isoformat(timespec="seconds")
         write_status(state="completed", message="האימון האוטומטי הסתיים בהצלחה", progress=100, started_at=started_at, finished_at=finished_at)
         with open(DONE_FLAG, "w", encoding="utf-8") as f:
             f.write(f"completed_at={finished_at}\n")
-        logger.info("=== ריצת Auto Trainer הסתיימה בהצלחה ===")
+        log_message("=== ריצת Auto Trainer הסתיימה בהצלחה ===")
 
     except Exception as e:
-        logger.error(f"שגיאה גלובלית בריצה:\n{traceback.format_exc()}")
-        write_status(state="error", message="האימון האוטומטי נכשל - ראה לוג", progress=0, error=str(e))
+        error_msg = traceback.format_exc()
+        log_message(f"שגיאה קריטית: {error_msg}")
+        write_status(state="error", message="האימון נכשל", progress=0, error=str(e))
         raise
 
 if __name__ == "__main__":
