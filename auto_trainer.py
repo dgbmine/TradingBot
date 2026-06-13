@@ -1,5 +1,5 @@
 # ============================================================
-# auto_trainer.py - BULLETPROOF EDITION (FIXED)
+# auto_trainer.py - BULLETPROOF EDITION (SET-IMMUNE)
 # ============================================================
 import os
 import sys
@@ -81,8 +81,8 @@ SECTOR_MAP = {
 }
 
 # ============================================================
-# 💡 התיקון המרכזי: שימוש ברשימת Tuples במקום מילון
-#    כדי למנוע לחלוטין את השגיאה: 'set' object has no attribute 'items'
+# 💡 שימוש ברשימת Tuples – מונע כל אפשרות ל-items()
+#    + הגנה אוטומטית למקרה שהמשתנה השתבש
 # ============================================================
 SECTORS_TO_TRAIN = [
     ("Growth (צמיחה)", SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"]),
@@ -207,11 +207,23 @@ def run_auto_trainer():
     start_date = start_date_dt.strftime("%Y-%m-%d")
     end_date = end_date_dt.strftime("%Y-%m-%d")
     base_threshold = 50
-    total_sectors = len(SECTORS_TO_TRAIN)
+
+    # ⚠️ הגנה מוחלטת: מוודאים ש-SECTORS_TO_TRAIN הוא רשימת צמדים, לא set/dict
+    sectors = SECTORS_TO_TRAIN
+    if isinstance(sectors, set):
+        log_message("אזהרה: SECTORS_TO_TRAIN הוא set, ממיר לרשימה.")
+        sectors = list(sectors)
+    elif isinstance(sectors, dict):
+        log_message("אזהרה: SECTORS_TO_TRAIN הוא dict, ממיר לרשימת צמדים.")
+        sectors = list(sectors.items())
+    elif not isinstance(sectors, list):
+        # כל דבר אחר – נמיר לרשימה ריקה כדי לא לקרוס
+        log_message(f"שגיאה קריטית: SECTORS_TO_TRAIN הוא מטיפוס {type(sectors)}. מפעיל רשימה ריקה.")
+        sectors = []
+    total_sectors = len(sectors)
 
     try:
-        # ✅ לולאה בטוחה לחלוטין – עוברת על רשימת Tuples, בלי items()
-        for sector_idx, (slot, tickers) in enumerate(SECTORS_TO_TRAIN, start=1):
+        for sector_idx, (slot, tickers) in enumerate(sectors, start=1):
             log_message(f"מתחיל סקטור: {slot}")
             write_status(
                 state="running",
