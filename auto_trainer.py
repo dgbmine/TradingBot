@@ -1,5 +1,5 @@
 # ============================================================
-# auto_trainer.py - BULLETPROOF EDITION
+# auto_trainer.py - BULLETPROOF EDITION (FIXED)
 # ============================================================
 import os
 import sys
@@ -80,7 +80,10 @@ SECTOR_MAP = {
     ]
 }
 
-# במקום מילון, אנחנו משתמשים ברשימה של צמדים (Tuples) כדי למנוע את פונקציית ה-.items()
+# ============================================================
+# 💡 התיקון המרכזי: שימוש ברשימת Tuples במקום מילון
+#    כדי למנוע לחלוטין את השגיאה: 'set' object has no attribute 'items'
+# ============================================================
 SECTORS_TO_TRAIN = [
     ("Growth (צמיחה)", SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"]),
     ("Value/Index (ערך/מדד)", SECTOR_MAP["ערך ומדד (Value/Index)"]),
@@ -207,13 +210,20 @@ def run_auto_trainer():
     total_sectors = len(SECTORS_TO_TRAIN)
 
     try:
-        # כאן הסרנו את הקריאה הבעייתית ל-.items()
+        # ✅ לולאה בטוחה לחלוטין – עוברת על רשימת Tuples, בלי items()
         for sector_idx, (slot, tickers) in enumerate(SECTORS_TO_TRAIN, start=1):
             log_message(f"מתחיל סקטור: {slot}")
-            write_status(state="running", message=f"מעבד סקטור: {slot}", progress=int(((sector_idx - 1) / total_sectors) * 100), current_slot=slot, started_at=started_at)
+            write_status(
+                state="running",
+                message=f"מעבד סקטור: {slot}",
+                progress=int(((sector_idx - 1) / total_sectors) * 100),
+                current_slot=slot,
+                started_at=started_at
+            )
 
             features_list, added_trades, errors = train_sector(
-                slot=slot, tickers=tickers, start_date=start_date, end_date=end_date, base_threshold=base_threshold
+                slot=slot, tickers=tickers, start_date=start_date,
+                end_date=end_date, base_threshold=base_threshold
             )
 
             safe_slot_name = clean_filename(slot)
@@ -255,7 +265,10 @@ def run_auto_trainer():
 
                 log_message(f"[{slot}] מאמן מודל על {len(X)} עסקאות.")
 
-                model = RandomForestClassifier(n_estimators=100, max_depth=3, min_samples_leaf=3, oob_score=True, random_state=42, n_jobs=-1)
+                model = RandomForestClassifier(
+                    n_estimators=100, max_depth=3, min_samples_leaf=3,
+                    oob_score=True, random_state=42, n_jobs=-1
+                )
                 model.fit(X, y)
 
                 try:
@@ -266,8 +279,12 @@ def run_auto_trainer():
                 optimal_th = calculate_optimal_threshold(model, X, y)
                 meta = {
                     "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
-                    "train_acc": train_acc, "test_acc": train_acc, "slot": slot,
-                    "model_type": "Wyckoff-Anchored", "num_trades": len(combined_df), "recommended_threshold": optimal_th
+                    "train_acc": train_acc,
+                    "test_acc": train_acc,
+                    "slot": slot,
+                    "model_type": "Wyckoff-Anchored",
+                    "num_trades": len(combined_df),
+                    "recommended_threshold": optimal_th
                 }
 
                 save_model_to_disk(slot, model, meta, le)
@@ -278,7 +295,13 @@ def run_auto_trainer():
                 continue
 
         finished_at = datetime.now().isoformat(timespec="seconds")
-        write_status(state="completed", message="האימון האוטומטי הסתיים בהצלחה", progress=100, started_at=started_at, finished_at=finished_at)
+        write_status(
+            state="completed",
+            message="האימון האוטומטי הסתיים בהצלחה",
+            progress=100,
+            started_at=started_at,
+            finished_at=finished_at
+        )
         with open(DONE_FLAG, "w", encoding="utf-8") as f:
             f.write(f"completed_at={finished_at}\n")
         log_message("=== ריצת Auto Trainer הסתיימה בהצלחה ===")
