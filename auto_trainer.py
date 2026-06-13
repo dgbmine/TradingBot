@@ -1,235 +1,342 @@
-import argparse
-import time
+# ============================================================
+# auto_trainer.py
+# ============================================================
 import os
+import sys
+import json
+import time
 import pickle
-import pandas as pd
-import numpy as np
+import urllib.request
 from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
-from scout_core import (
-    run_wyckoff_anchored_backtest,
-    FactorEngine,
-    BacktestConfig,
-    clean_filename,
-    calculate_optimal_threshold
-)
 
-# -------------------------------------------------------------------
-# Utility function to save model + metadata + encoder to disk
-# (was originally in the root script, not inside scout_core)
-# -------------------------------------------------------------------
+# מוסיף את התיקייה הנוכחית ל-Path כדי לוודא ש-scout_core יימצא
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(BASE_DIR)
+
+from scout_core import *  # noqa: F401,F403
+
+MODEL_DIR = os.path.join(BASE_DIR, "models")
+STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
+DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
+
+SCAN_UNIVERSE = list(dict.fromkeys([
+    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","JPM","JNJ",
+    "V","UNH","XOM","PG","MA","HD","CVX","MRK","ABBV","PEP",
+    "KO","AVGO","COST","WMT","LLY","TMO","MCD","ACN","BAC","CRM",
+    "NFLX","AMD","ADBE","CSCO","ABT","TXN","NEE","DHR","RTX","QCOM",
+    "HON","NKE","INTC","AMGN","PM","IBM","SBUX","INTU","GS","CAT",
+    "BA","GE","SPGI","AXP","BLK","DE","ISRG","MDLZ","ADI","GILD",
+    "REGN","SYK","ZTS","MMC","AON","TJX","SCHW","CB","USB","WFC",
+    "C","MS","CVS","CI","SLB","EOG","OXY","COP","PSX","VLO",
+    "AMT","PLD","CCI","EQIX","SPG","O","WELL","DLR",
+    "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
+    "PANW","CRWD","FTNT","ZS","DDOG","SNOW","MDB","NET","PLTR",
+    "UBER","ABNB","COIN","SOFI","UPST",
+    "F","GM","RIVN","NIO",
+    "ONTO","KLAC","LRCX","AMAT","MRVL","SMCI","DELL","HPQ",
+    "DIS","CMCSA","RBLX","U","TTWO","EA",
+    "DAL","UAL","AAL","LUV","FDX","UPS","XPO","ODFL",
+    "DKNG","MGM","CZR","RCL","CCL","MAR","HLT"
+]))
+
+SECTOR_MAP = {
+    "הכול (כל השוק האמריקאי)": SCAN_UNIVERSE,
+    "צמיחה וטכנולוגיה (Growth)": [
+        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
+        "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
+        "PANW","CRWD","FTNT","ZS","DDOG","SNOW","MDB","NET","PLTR",
+        "UBER","ABNB","COIN","SOFI","UPST","ONTO","KLAC","LRCX",
+        "AMAT","MRVL","SMCI","DELL","HPQ","RBLX","U","TTWO","EA"
+    ],
+    "ערך ומדד (Value/Index)": [
+        "BRK-B","JPM","JNJ","V","UNH","PG","MA","HD","MRK","ABBV",
+        "PEP","KO","COST","WMT","LLY","TMO","MCD","ACN","BAC","ABT",
+        "DHR","RTX","HON","NKE","AMGN","PM","IBM","SBUX","GS","CAT",
+        "BA","GE","SPGI","AXP","BLK","DE","ISRG","MDLZ","GILD",
+        "REGN","SYK","ZTS","MMC","AON","TJX","SCHW","CB","USB","WFC",
+        "C","MS","CVS","CI","AMT","PLD","CCI","EQIX","SPG","O",
+        "WELL","DLR","DIS","CMCSA","DAL","UAL","AAL","LUV","FDX",
+        "UPS","XPO","ODFL","DKNG","MGM","CZR","RCL","CCL","MAR","HLT"
+    ],
+    "סחורות ואנרגיה (Commodities)": [
+        "XOM","CVX","SLB","EOG","OXY","COP","PSX","VLO",
+        "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
+        "GLD", "SLV"
+    ]
+}
+
+TRAINING_UNIVERSE = {
+    "Growth (צמיחה)": SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"],
+    "Value/Index (ערך/מדד)": SECTOR_MAP["ערך ומדד (Value/Index)"],
+    "Commodities (סחורות)": SECTOR_MAP["סחורות ואנרגיה (Commodities)"]
+}
+
 def save_model_to_disk(slot_name, model, metadata, encoder):
-    os.makedirs("models", exist_ok=True)
+    os.makedirs(MODEL_DIR, exist_ok=True)
     safe_name = clean_filename(slot_name)
-    file_path = f"models/model_{safe_name}.pkl"
+    file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
     save_data = {"model": model, "metadata": metadata, "phase_encoder": encoder}
     with open(file_path, "wb") as f:
         pickle.dump(save_data, f)
     return file_path
 
-# -------------------------------------------------------------------
-# Training Universe (same as original)
-# -------------------------------------------------------------------
-TRAINING_UNIVERSE = {
-    "Growth (צמיחה)": [
-        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "CRM",
-        "NFLX", "AMD", "ADBE", "CSCO", "TXN", "QCOM", "INTC", "INTU", "ADI",
-        "PANW", "CRWD", "FTNT", "ZS", "DDOG", "SNOW", "MDB", "NET", "PLTR",
-        "UBER", "ABNB", "COIN", "SOFI", "UPST", "ONTO", "KLAC", "LRCX",
-        "AMAT", "MRVL", "SMCI", "DELL", "HPQ", "RBLX", "U", "TTWO", "EA"
-    ],
-    "Value/Index (ערך/מדד)": [
-        "BRK-B", "JPM", "JNJ", "V", "UNH", "PG", "MA", "HD", "MRK", "ABBV",
-        "PEP", "KO", "COST", "WMT", "LLY", "TMO", "MCD", "ACN", "BAC", "ABT",
-        "DHR", "RTX", "HON", "NKE", "AMGN", "PM", "IBM", "SBUX", "GS", "CAT",
-        "BA", "GE", "SPGI", "AXP", "BLK", "DE", "ISRG", "MDLZ", "GILD",
-        "REGN", "SYK", "ZTS", "MMC", "AON", "TJX", "SCHW", "CB", "USB", "WFC",
-        "C", "MS", "CVS", "CI", "AMT", "PLD", "CCI", "EQIX", "SPG", "O",
-        "WELL", "DLR", "DIS", "CMCSA", "DAL", "UAL", "AAL", "LUV", "FDX",
-        "UPS", "XPO", "ODFL", "DKNG", "MGM", "CZR", "RCL", "CCL", "MAR", "HLT"
-    ],
-    "Commodities (סחורות)": [
-        "XOM", "CVX", "SLB", "EOG", "OXY", "COP", "PSX", "VLO",
-        "FCX", "NEM", "GOLD", "AEM", "WPM", "FNV", "PAAS", "AG",
-        "GLD", "SLV"
-    ]
-}
+def write_status(state, message="", progress=0, current_slot="N/A", started_at=None, finished_at=None, error=None):
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    payload = {
+        "state": state,
+        "message": message,
+        "progress": int(progress),
+        "current_slot": current_slot,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "started_at": started_at or datetime.now().isoformat(timespec="seconds"),
+        "finished_at": finished_at or "N/A",
+    }
+    if error:
+        payload["error"] = str(error)
 
-# -------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser(description="Auto-Trainer for Institutional Scout Pro")
-    parser.add_argument(
-        "--mode",
-        choices=["full", "quarterly"],
-        required=True,
-        help="'full' for 6-year training, 'quarterly' for last 90 days"
-    )
-    args = parser.parse_args()
-    mode = args.mode
+    with open(STATUS_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    end_date_dt = datetime.today()
-    if mode == "full":
-        start_date_dt = end_date_dt - timedelta(days=6 * 365)
-    else:
-        start_date_dt = end_date_dt - timedelta(days=90)
+def send_webhook(payload):
+    webhook_url = os.getenv("AUTO_TRAINER_WEBHOOK_URL", "").strip()
+    if not webhook_url:
+        return
 
-    start_date = start_date_dt.strftime("%Y-%m-%d")
-    end_date = end_date_dt.strftime("%Y-%m-%d")
+    try:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            webhook_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception:
+        pass
 
-    print(f"[*] Starting Auto-Trainer in '{mode}' mode.")
-    print(f"[*] Time Range: {start_date} -> {end_date}")
+def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_profile="Aggressive"):
+    features_list = []
+    errors = 0
+    added_trades = 0
+    engine = FactorEngine(BacktestConfig())
 
-    results_summary = {}
-    base_threshold = 50   # initial threshold for backtest data collection
+    for ticker in tickers:
+        time.sleep(0.2)
+        try:
+            bt_df, audit_df = run_wyckoff_anchored_backtest(
+                ticker,
+                use_ai=False,
+                threshold=base_threshold,
+                period=None,
+                start=start_date,
+                end=end_date,
+                risk_profile=risk_profile
+            )
 
-    start_time = time.time()
-
-    for slot, tickers in TRAINING_UNIVERSE.items():
-        print(f"\n=============================================")
-        print(f"[*] Processing Sector: {slot} ({len(tickers)} tickers)")
-        print(f"=============================================")
-
-        safe_slot_name = clean_filename(slot)
-        history_path = f"models/training_data_{safe_slot_name}.csv"
-        os.makedirs("models", exist_ok=True)
-
-        features_list = []
-        errors = 0
-        added_trades = 0
-
-        for ticker in tickers:
-            time.sleep(0.5)   # polite rate-limiting
-            try:
-                bt_df, audit_df = run_wyckoff_anchored_backtest(
-                    ticker,
-                    use_ai=False,
-                    threshold=base_threshold,
-                    period=None,
-                    start=start_date,
-                    end=end_date,
-                    risk_profile="Aggressive"
-                )
-
-                if audit_df is None or audit_df.empty:
-                    continue
-
-                engine = FactorEngine(BacktestConfig())
-                df = bt_df.copy()
-
-                for _, trade in audit_df.iterrows():
-                    entry_dt = pd.Timestamp(trade["entry_date"])
-                    if entry_dt in df.index:
-                        # take up to 200 bars before the entry
-                        window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
-                        factors = engine.compute(window_df)
-                        if len(factors) > 0:
-                            feature_row = factors.iloc[-1].to_dict()
-                            feature_row["phase"] = df.loc[entry_dt]["wyckoff_phase"]
-                            feature_row["label"] = 1 if trade["win"] else 0
-                            feature_row["ticker"] = ticker
-                            feature_row["entry_date"] = trade["entry_date"]
-                            features_list.append(feature_row)
-                            added_trades += 1
-
-            except Exception as e:
-                print(f"[!] ERROR processing {ticker}: {e}")
-                errors += 1
+            if audit_df is None or audit_df.empty:
                 continue
 
-        # -------------------------------
-        # Merge with existing CSV for the sector
-        # -------------------------------
-        if not features_list and not os.path.exists(history_path):
-            print(f"[!] No valid trades found for sector {slot}. Skipping.")
+            df = bt_df.copy()
+            for _, trade in audit_df.iterrows():
+                entry_dt = pd.Timestamp(trade["entry_date"])
+                if entry_dt in df.index:
+                    window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
+                    factors = engine.compute(window_df)
+                    if len(factors) > 0:
+                        feature_row = factors.iloc[-1].to_dict()
+                        feature_row["phase"] = df.loc[entry_dt]["wyckoff_phase"]
+                        feature_row["label"] = 1 if trade["win"] else 0
+                        feature_row["ticker"] = ticker
+                        feature_row["entry_date"] = trade["entry_date"]
+                        features_list.append(feature_row)
+                        added_trades += 1
+        except Exception:
+            errors += 1
             continue
 
-        new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
+    return features_list, added_trades, errors
 
-        if os.path.exists(history_path):
-            hist_df = pd.read_csv(history_path)
-            combined_df = pd.concat([hist_df, new_df], ignore_index=True)
-            combined_df = combined_df.drop_duplicates(subset=["ticker", "entry_date"], keep="last")
-        else:
-            combined_df = new_df
+def run_auto_trainer():
+    os.makedirs(MODEL_DIR, exist_ok=True)
 
-        if combined_df.empty:
-            continue
-
-        combined_df.to_csv(history_path, index=False)
-        print(f"[*] {slot}: {added_trades} new trades added | Total in Library: {len(combined_df)} | Errors: {errors}")
-
-        # -------------------------------
-        # Model training for the sector
-        # -------------------------------
-        print(f"[*] Training Model for {slot}...")
-        y = combined_df["label"].values
-
-        le = LabelEncoder()
-        phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
-        phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
-
-        drop_cols = ["phase", "label", "ticker", "entry_date"]
-        tech_factors = combined_df.drop(
-            columns=[c for c in drop_cols if c in combined_df.columns]
-        ).select_dtypes(include=[np.number])
-
-        X = pd.concat(
-            [tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)],
-            axis=1
-        ).fillna(0)
-
-        model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=3,
-            min_samples_leaf=3,
-            oob_score=True,
-            random_state=42,
-            n_jobs=-1
-        )
-        model.fit(X, y)
-
+    if os.path.exists(DONE_FLAG):
         try:
-            train_acc = model.oob_score_
-        except:
-            train_acc = model.score(X, y)
+            os.remove(DONE_FLAG)
+        except Exception:
+            pass
 
-        optimal_th = calculate_optimal_threshold(model, X, y)
+    started_at = datetime.now().isoformat(timespec="seconds")
+    write_status(
+        state="running",
+        message="האימון האוטומטי התחיל",
+        progress=0,
+        current_slot="N/A",
+        started_at=started_at
+    )
+    send_webhook({"state": "running", "message": "auto_trainer started", "started_at": started_at})
 
-        meta = {
-            "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
-            "train_acc": train_acc,
-            "test_acc": train_acc,
-            "slot": slot,
-            "model_type": "Wyckoff-Anchored",
-            "num_trades": len(combined_df),
-            "recommended_threshold": optimal_th
-        }
+    end_date_dt = datetime.today()
+    start_date_dt = end_date_dt - timedelta(days=6 * 365)
+    start_date = start_date_dt.strftime("%Y-%m-%d")
+    end_date = end_date_dt.strftime("%Y-%m-%d")
+    base_threshold = 50
+    total_sectors = len(TRAINING_UNIVERSE)
+    results_summary = {}
 
-        save_model_to_disk(slot, model, meta, le)
-        results_summary[slot] = {
-            "tickers": len(tickers),
-            "oob": train_acc * 100,
-            "th": optimal_th
-        }
+    try:
+        for sector_idx, (slot, tickers) in enumerate(TRAINING_UNIVERSE.items(), start=1):
+            write_status(
+                state="running",
+                message=f"מעבד סקטור: {slot}",
+                progress=int(((sector_idx - 1) / total_sectors) * 100),
+                current_slot=slot,
+                started_at=started_at
+            )
 
-        time.sleep(3)   # pause between sectors
+            features_list, added_trades, errors = train_sector(
+                slot=slot,
+                tickers=tickers,
+                start_date=start_date,
+                end_date=end_date,
+                base_threshold=base_threshold,
+                risk_profile="Aggressive"
+            )
 
-    # -------------------------------
-    # Final ASCII summary table
-    # -------------------------------
-    elapsed = time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))
-    print("\n╔══════════════════════════════════════════╗")
-    print("║ AUTO-TRAINER COMPLETE                    ║")
-    for slot, data in results_summary.items():
-        short_name = slot.split()[0]   # e.g. "Growth", "Value/Index", "Commodities"
-        print(
-            f"║ {short_name.ljust(15)}: {str(data['tickers']).rjust(3)} stocks"
-            f" | OOB: {data['oob']:.1f}% | TH: {data['th']}  ║"
+            safe_slot_name = clean_filename(slot)
+            history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
+
+            new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
+            if os.path.exists(history_path):
+                hist_df = pd.read_csv(history_path)
+                if not new_df.empty:
+                    combined_df = pd.concat([hist_df, new_df], ignore_index=True)
+                    combined_df = combined_df.drop_duplicates(subset=["ticker", "entry_date"], keep="last")
+                else:
+                    combined_df = hist_df
+            else:
+                combined_df = new_df
+
+            if combined_df.empty:
+                write_status(
+                    state="running",
+                    message=f"אין עסקאות לסקטור {slot}, מדלג",
+                    progress=int((sector_idx / total_sectors) * 100),
+                    current_slot=slot,
+                    started_at=started_at
+                )
+                continue
+
+            combined_df.to_csv(history_path, index=False)
+
+            if combined_df["label"].nunique() < 2:
+                write_status(
+                    state="running",
+                    message=f"לא מספיק מגוון תוויות בסקטור {slot}, מדלג על אימון",
+                    progress=int((sector_idx / total_sectors) * 100),
+                    current_slot=slot,
+                    started_at=started_at
+                )
+                continue
+
+            y = combined_df["label"].values
+            le = LabelEncoder()
+            phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
+            phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
+
+            drop_cols = ["phase", "label", "ticker", "entry_date"]
+            tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns]).select_dtypes(include=[np.number])
+            X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).fillna(0)
+
+            model = RandomForestClassifier(
+                n_estimators=100,
+                max_depth=3,
+                min_samples_leaf=3,
+                oob_score=True,
+                random_state=42,
+                n_jobs=-1
+            )
+            model.fit(X, y)
+
+            try:
+                train_acc = model.oob_score_
+            except Exception:
+                train_acc = model.score(X, y)
+
+            optimal_th = calculate_optimal_threshold(model, X, y)
+            meta = {
+                "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
+                "train_acc": train_acc,
+                "test_acc": train_acc,
+                "slot": slot,
+                "model_type": "Wyckoff-Anchored",
+                "num_trades": len(combined_df),
+                "recommended_threshold": optimal_th
+            }
+
+            save_model_to_disk(slot, model, meta, le)
+
+            results_summary[slot] = {
+                "tickers": len(tickers),
+                "oob": train_acc * 100,
+                "th": optimal_th,
+                "trades": len(combined_df),
+                "errors": errors,
+                "added": added_trades
+            }
+
+            write_status(
+                state="running",
+                message=f"הושלם סקטור {slot}",
+                progress=int((sector_idx / total_sectors) * 100),
+                current_slot=slot,
+                started_at=started_at
+            )
+
+        finished_at = datetime.now().isoformat(timespec="seconds")
+        write_status(
+            state="completed",
+            message="האימון האוטומטי הסתיים בהצלחה",
+            progress=100,
+            current_slot="N/A",
+            started_at=started_at,
+            finished_at=finished_at
         )
-    print(f"║ Total runtime: {elapsed}                  ║")
-    print("╚══════════════════════════════════════════╝\n")
 
+        with open(DONE_FLAG, "w", encoding="utf-8") as f:
+            f.write(f"completed_at={finished_at}\n")
+
+        send_webhook({
+            "state": "completed",
+            "message": "auto_trainer completed",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "results_summary": results_summary
+        })
+
+    except Exception as e:
+        finished_at = datetime.now().isoformat(timespec="seconds")
+        write_status(
+            state="error",
+            message="האימון האוטומטי נכשל",
+            progress=0,
+            current_slot="N/A",
+            started_at=started_at,
+            finished_at=finished_at,
+            error=str(e)
+        )
+        send_webhook({
+            "state": "error",
+            "message": "auto_trainer failed",
+            "error": str(e),
+            "started_at": started_at,
+            "finished_at": finished_at
+        })
+        raise
 
 if __name__ == "__main__":
-    main()
+    run_auto_trainer()
