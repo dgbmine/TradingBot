@@ -1,9 +1,5 @@
-import os
-import pickle
-import json
 import numpy as np
 import pandas as pd
-from datetime import datetime
 import yfinance as yf
 from dataclasses import dataclass
 import warnings
@@ -12,57 +8,16 @@ from sklearn.preprocessing import LabelEncoder
 
 warnings.filterwarnings("ignore")
 
-# יבוא בטוח של Streamlit כך שהקוד יעבוד גם ב-CLI וגם באפליקציה
+# Safe import so the code works both with and without Streamlit
 try:
     import streamlit as st
 except ImportError:
     st = None
 
+
 def clean_filename(name):
     return "".join(c for c in name if c.isalnum() or c in (' ', '_', '-')).replace(' ', '_')
 
-def save_model_to_disk(slot_name, model, metadata, encoder):
-    os.makedirs("models", exist_ok=True)
-    safe_name = clean_filename(slot_name)
-    file_path = f"models/model_{safe_name}.pkl"
-    save_data = {"model": model, "metadata": metadata, "phase_encoder": encoder}
-    with open(file_path, "wb") as f:
-        pickle.dump(save_data, f)
-    return file_path
-
-def load_all_models_from_disk():
-    loaded_archive = {}
-    if os.path.exists("models"):
-        for filename in os.listdir("models"):
-            if filename.endswith(".pkl"):
-                filepath = os.path.join("models", filename)
-                try:
-                    with open(filepath, "rb") as f:
-                        data = pickle.load(f)
-                    slot = data.get("metadata", {}).get("slot", filename)
-                    loaded_archive[slot] = data
-                except: pass
-    return loaded_archive
-
-def save_research_df_to_disk(slot_name, research_df):
-    os.makedirs("research_labels", exist_ok=True)
-    safe_name = clean_filename(slot_name)
-    file_path = f"research_labels/research_{safe_name}.csv"
-    research_df.to_csv(file_path, index=False)
-    return file_path
-
-def load_all_research_dfs_from_disk():
-    archive = {}
-    if os.path.exists("research_labels"):
-        for filename in os.listdir("research_labels"):
-            if filename.endswith(".csv"):
-                filepath = os.path.join("research_labels", filename)
-                try:
-                    df = pd.read_csv(filepath)
-                    key = filename.replace("research_", "").replace(".csv", "")
-                    archive[key] = df
-                except: pass
-    return archive
 
 def get_data(ticker, period="1y", start=None, end=None):
     try:
@@ -70,18 +25,20 @@ def get_data(ticker, period="1y", start=None, end=None):
             df = yf.Ticker(ticker).history(start=start, end=end)
         else:
             df = yf.Ticker(ticker).history(period=period)
-        if df is None or len(df) < 40: return None
+        if df is None or len(df) < 40:
+            return None
         df.index = pd.to_datetime(df.index).tz_localize(None)
         return df
     except:
         return None
+
 
 def calculate_optimal_threshold(model, X, y):
     try:
         probs = model.predict_proba(X)[:, 1] * 100
     except:
         return 65
-    
+
     best_thresh = 50
     best_score = 0
     for th in range(50, 95, 2):
@@ -95,6 +52,7 @@ def calculate_optimal_threshold(model, X, y):
                 best_thresh = th
     return best_thresh
 
+
 def build_research_ground_truth(bt_df, audit_df, window_days=180):
     if bt_df is None or audit_df is None or audit_df.empty:
         return pd.DataFrame()
@@ -102,54 +60,75 @@ def build_research_ground_truth(bt_df, audit_df, window_days=180):
     bt_df = bt_df.copy()
     bt_df.index = pd.to_datetime(bt_df.index).tz_localize(None)
     enriched = []
-    
+
     for _, trade in audit_df.iterrows():
         try:
             entry_ts = pd.Timestamp(trade["entry_date"])
             exit_ts = pd.Timestamp(trade["exit_date"])
-            if entry_ts not in bt_df.index: continue
-                
+            if entry_ts not in bt_df.index:
+                continue
+
             entry_px = float(trade.get("entry_price", bt_df.loc[entry_ts, "Close"]))
             eval_end = min(entry_ts + pd.Timedelta(days=window_days), bt_df.index.max())
             future = bt_df.loc[entry_ts:eval_end].copy()
-            if future.empty: continue
-                
+            if future.empty:
+                continue
+
             prior_start = entry_ts - pd.DateOffset(months=6)
             prior = bt_df.loc[prior_start:entry_ts].copy()
-            if prior.empty: prior = bt_df.loc[:entry_ts].tail(126).copy()
-                
+            if prior.empty:
+                prior = bt_df.loc[:entry_ts].tail(126).copy()
+
             future_max_close = float(future["Close"].max())
             future_min_close = float(future["Close"].min())
             future_max_return = round((future_max_close / entry_px - 1) * 100, 2)
             future_max_drawdown = round((future_min_close / entry_px - 1) * 100, 2)
-            
+
             prior_high = prior["High"].max() if not prior.empty else np.nan
             prior_vol_ma20 = prior["Volume"].rolling(20).mean().iloc[-1] if len(prior) >= 20 else prior["Volume"].mean()
-            
+
             breakout_confirmed = False
             days_to_breakout = None
             if pd.notna(prior_high):
                 vol_ma_future = future["Volume"].rolling(20).mean()
                 vol_ma_future = vol_ma_future.fillna(future["Volume"].expanding().mean())
-                breakout_mask = ((future["High"] > prior_high * 1.01) & (future["Volume"] > vol_ma_future * 1.2))
+                breakout_mask = (
+                    (future["High"] > prior_high * 1.01) &
+                    (future["Volume"] > vol_ma_future * 1.2)
+                )
                 if breakout_mask.any():
                     breakout_idx = breakout_mask[breakout_mask].index[0]
                     breakout_confirmed = True
                     days_to_breakout = int((pd.Timestamp(breakout_idx) - entry_ts).days)
-                    
-            markup_confirmed = future["wyckoff_phase"].astype(str).str.contains("Spring|LPS|SOS|Breakout", regex=True).any()
-            volume_expansion_confirmed = bool(pd.notna(prior_vol_ma20) and future["Volume"].max() > (prior_vol_ma20 * 1.2))
-            relative_strength_confirmed = bool(len(future) >= 10 and future["Close"].iloc[-1] > future["Close"].rolling(50, min_periods=10).mean().iloc[-1])
-            
+
+            markup_confirmed = (
+                future["wyckoff_phase"]
+                .astype(str)
+                .str.contains("Spring|LPS|SOS|Breakout", regex=True)
+                .any()
+            )
+            volume_expansion_confirmed = bool(
+                pd.notna(prior_vol_ma20) and future["Volume"].max() > (prior_vol_ma20 * 1.2)
+            )
+            relative_strength_confirmed = bool(
+                len(future) >= 10 and
+                future["Close"].iloc[-1] > future["Close"].rolling(50, min_periods=10).mean().iloc[-1]
+            )
+
             if trade.get("exit_type") == "Pattern_Recognition_Failure":
                 research_label = "False_Positive"
-            elif future_max_return >= 15 and breakout_confirmed and markup_confirmed and volume_expansion_confirmed:
+            elif (
+                future_max_return >= 15 and
+                breakout_confirmed and
+                markup_confirmed and
+                volume_expansion_confirmed
+            ):
                 research_label = "True_Accumulation"
             elif future_max_return >= 10 and (breakout_confirmed or markup_confirmed or relative_strength_confirmed):
                 research_label = "Possible_Accumulation"
             else:
                 research_label = "False_Positive"
-                
+
             enriched.append({
                 **trade.to_dict(),
                 "future_max_return": future_max_return,
@@ -162,12 +141,15 @@ def build_research_ground_truth(bt_df, audit_df, window_days=180):
                 "volume_expansion_confirmed": bool(volume_expansion_confirmed),
                 "research_label": research_label
             })
-        except Exception: continue
-            
+        except Exception:
+            continue
+
     return pd.DataFrame(enriched)
 
+
 def check_phase_entry_allowed(phase, risk_profile):
-    if "לא בתהליך" in phase: return False
+    if "לא בתהליך" in phase:
+        return False
     if risk_profile == "Aggressive":
         return any(p in phase for p in ["Phase C", "Phase D", "Phase E", "Spring", "LPS", "SOS", "Breakout"])
     elif risk_profile == "Balanced":
@@ -175,6 +157,7 @@ def check_phase_entry_allowed(phase, risk_profile):
     elif risk_profile == "Conservative":
         return any(p in phase for p in ["Phase E", "Breakout"])
     return False
+
 
 @dataclass
 class BacktestConfig:
@@ -185,13 +168,15 @@ class BacktestConfig:
     stop_loss_pct: float = 0.05
     atr_multiplier: float = 2.0
 
+
 class FactorEngine:
     def __init__(self, cfg: BacktestConfig):
         self.cfg = cfg
 
     def _compute_quick_wyckoff(self, df: pd.DataFrame) -> pd.Series:
         score = pd.Series(0.0, index=df.index)
-        if len(df) < 40: return score
+        if len(df) < 40:
+            return score
         spread = df['High'] - df['Low']
         vol_ma = df['Volume'].rolling(20).mean()
         has_sc, has_ar, has_st = False, False, False
@@ -238,41 +223,86 @@ class FactorEngine:
         vol_ma20 = df["Volume"].rolling(20).mean()
         rvol = df["Volume"] / vol_ma20.replace(0, np.nan)
         spread_ma20 = rng.rolling(20).mean()
-        f["f04_absorption"] = (((df["Volume"] > vol_ma20 * 1.5) & (rng < spread_ma20 * 0.8)) & (df["Close"] <= df["Low"].rolling(20).min() * 1.05)).astype(float)
+        f["f04_absorption"] = (
+            ((df["Volume"] > vol_ma20 * 1.5) & (rng < spread_ma20 * 0.8)) &
+            (df["Close"] <= df["Low"].rolling(20).min() * 1.05)
+        ).astype(float)
         f["f36_wyckoff_score"] = self._compute_quick_wyckoff(df)
         price_bins = pd.cut(df["Close"], bins=40, labels=False)
-        f["f01_liquidity_gap"] = ((df.groupby(price_bins)["Volume"].transform("sum") < df.groupby(price_bins)["Volume"].transform("mean") * 0.5).astype(float).rolling(5).mean())
+        f["f01_liquidity_gap"] = (
+            (df.groupby(price_bins)["Volume"].transform("sum") <
+             df.groupby(price_bins)["Volume"].transform("mean") * 0.5)
+            .astype(float).rolling(5).mean()
+        )
         sma20 = df["Close"].rolling(20).mean()
         std20 = df["Close"].rolling(20).std()
-        atr14 = pd.concat([rng, (df["High"] - df["Close"].shift(1)).abs(), (df["Low"] - df["Close"].shift(1)).abs()], axis=1).max(axis=1).rolling(14).mean()
-        f["f02_volatility_squeeze"] = ((((2 * std20) / sma20.replace(0, np.nan)) < ((2 * std20) / sma20.replace(0, np.nan)).rolling(20).mean() * 0.75) & (atr14 < atr14.rolling(20).mean() * 0.75)).astype(float)
-        spy_slope = df.get("spy_close", df["Close"]).rolling(50).mean().diff(10) / df.get("spy_close", df["Close"]).rolling(50).mean().shift(10).replace(0, np.nan)
+        atr14 = pd.concat(
+            [rng, (df["High"] - df["Close"].shift(1)).abs(), (df["Low"] - df["Close"].shift(1)).abs()], axis=1
+        ).max(axis=1).rolling(14).mean()
+        f["f02_volatility_squeeze"] = (
+            (((2 * std20) / sma20.replace(0, np.nan)) <
+             ((2 * std20) / sma20.replace(0, np.nan)).rolling(20).mean() * 0.75) &
+            (atr14 < atr14.rolling(20).mean() * 0.75)
+        ).astype(float)
+        spy_slope = (
+            df.get("spy_close", df["Close"]).rolling(50).mean().diff(10) /
+            df.get("spy_close", df["Close"]).rolling(50).mean().shift(10).replace(0, np.nan)
+        )
         f["f03_regime"] = (spy_slope > 0.01).astype(float) - (spy_slope < -0.01).astype(float)
         resist = df["High"].rolling(20).max().shift(1)
-        f["f05_breakout_quality"] = ((df["Close"] > resist) & (df["Close"].rolling(3).mean() > resist.shift(1))).astype(float)
-        f["f06_cis_weight"] = np.clip(1.0 / (std20 / std20.rolling(60).mean().replace(0, np.nan)).replace(0, np.nan), 0.5, 2.0)
+        f["f05_breakout_quality"] = (
+            (df["Close"] > resist) & (df["Close"].rolling(3).mean() > resist.shift(1))
+        ).astype(float)
+        f["f06_cis_weight"] = np.clip(
+            1.0 / (std20 / std20.rolling(60).mean().replace(0, np.nan)).replace(0, np.nan), 0.5, 2.0
+        )
         obv = (np.sign(df["Close"].diff()) * df["Volume"]).cumsum()
-        f["f07_obv_velocity"] = (obv.diff(10) / obv.abs().rolling(10).mean().replace(0, np.nan)).clip(-3, 3)
+        f["f07_obv_velocity"] = (
+            obv.diff(10) / obv.abs().rolling(10).mean().replace(0, np.nan)
+        ).clip(-3, 3)
         f["f08_dist_from_ma"] = (df["Close"] / sma20) - 1
         f["f10_temporal_seq"] = (f["f04_absorption"].rolling(30).max() * (rvol < 0.7).astype(float))
-        f["f11_kill_switch"] = ((df["Close"].pct_change() < -0.05) | (rvol > 4.0)).astype(float)
-        f["f14_inst_intent"] = (f["f04_absorption"] * 0.3 + f["f07_obv_velocity"].clip(0, 1) * 0.4 + f["f10_temporal_seq"] * 0.3).clip(0, 1)
-        f["f15_mtf"] = ((df["Close"] > sma20).astype(float) * (df["Close"].rolling(5).mean() > df["Close"].rolling(5).mean().rolling(4).mean()).astype(float))
+        f["f11_kill_switch"] = (
+            (df["Close"].pct_change() < -0.05) | (rvol > 4.0)
+        ).astype(float)
+        f["f14_inst_intent"] = (
+            f["f04_absorption"] * 0.3 + f["f07_obv_velocity"].clip(0, 1) * 0.4 + f["f10_temporal_seq"] * 0.3
+        ).clip(0, 1)
+        f["f15_mtf"] = (
+            (df["Close"] > sma20).astype(float) *
+            (df["Close"].rolling(5).mean() > df["Close"].rolling(5).mean().rolling(4).mean()).astype(float)
+        )
         support = df["Low"].rolling(20).min().shift(1)
-        f["f20_liquidity_sweep"] = ((df["Low"] < support) & (df["Close"] > support)).astype(float)
-        f["f22_sr_strength"] = (df["Low"].rolling(5).min() <= df["Low"].rolling(20).min() * 1.005).astype(float).rolling(20).sum() / 20
-        f["f26_accept_reject"] = ((df["Close"] > (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean() - ((df["Close"] < (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean()
-        f["f28_inst_part"] = ((body > body.rolling(20).mean() * 1.5) & (rvol > 1.5)).astype(float)
-        f["f31_bear_trap"] = ((df["Close"] < df["Low"].rolling(20).min().shift(1)) & (df["Close"].shift(1) > df["Low"].rolling(20).min().shift(2))).astype(float)
-        f["f35_struct_break"] = (df["Close"] > df["High"].rolling(20).max().shift(1)).astype(float) - (df["Close"] < df["Low"].rolling(20).min().shift(1)).astype(float)
+        f["f20_liquidity_sweep"] = (
+            (df["Low"] < support) & (df["Close"] > support)
+        ).astype(float)
+        f["f22_sr_strength"] = (
+            (df["Low"].rolling(5).min() <= df["Low"].rolling(20).min() * 1.005)
+            .astype(float).rolling(20).sum() / 20
+        )
+        f["f26_accept_reject"] = (
+            ((df["Close"] > (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean() -
+            ((df["Close"] < (df["High"] + df["Low"]) / 2) & (df["Volume"] > vol_ma20)).astype(float).rolling(5).mean()
+        )
+        f["f28_inst_part"] = (
+            (body > body.rolling(20).mean() * 1.5) & (rvol > 1.5)
+        ).astype(float)
+        f["f31_bear_trap"] = (
+            (df["Close"] < df["Low"].rolling(20).min().shift(1)) &
+            (df["Close"].shift(1) > df["Low"].rolling(20).min().shift(2))
+        ).astype(float)
+        f["f35_struct_break"] = (
+            (df["Close"] > df["High"].rolling(20).max().shift(1)).astype(float) -
+            (df["Close"] < df["Low"].rolling(20).min().shift(1)).astype(float)
+        )
         return f.fillna(0)
 
     def composite_cis(self, factors: pd.DataFrame, df: pd.DataFrame = None) -> pd.Series:
         use_ml = False
         model = None
         phase_encoder = None
-        
-        # בטיחות בסביבה ללא Streamlit
+
+        # Safe check for Streamlit session state
         if st is not None and getattr(st, 'session_state', None):
             use_ml = getattr(st.session_state, 'use_ml', False)
             model = getattr(st.session_state, 'ml_model', None)
@@ -301,14 +331,17 @@ class FactorEngine:
                 probs = model.predict(X_pred)
             score = pd.Series(probs * 100, index=factors.index)
         else:
-            w = {"f04_absorption": 6, "f07_obv_velocity": 5, "f14_inst_intent": 6, "f20_liquidity_sweep": 3, "f26_accept_reject": 3, "f35_struct_break": 2}
+            w = {
+                "f04_absorption": 6, "f07_obv_velocity": 5, "f14_inst_intent": 6,
+                "f20_liquidity_sweep": 3, "f26_accept_reject": 3, "f35_struct_break": 2
+            }
             tot = sum(abs(v) for v in w.values() if v != 0)
             score = pd.Series(0.0, index=factors.index)
             for col, weight in w.items():
                 if col in factors.columns:
                     score += factors[col].clip(-1, 1) * weight
             score = (score / tot * 100 + 50).clip(0, 100)
-            
+
         if "f36_wyckoff_score" in factors.columns:
             wyckoff_score = factors["f36_wyckoff_score"]
             boost_floor = np.where(wyckoff_score >= 0.9, 65.0, 0.0)
@@ -321,12 +354,14 @@ class FactorEngine:
 
     def get_wyckoff_phase(self, df: pd.DataFrame) -> pd.Series:
         phases = pd.Series("לא בתהליך איסוף", index=df.index)
-        if len(df) < 40: return phases
+        if len(df) < 40:
+            return phases
         has_sc, has_ar, has_st = False, False, False
         sc_idx, sc_low, ar_high = 0, 0, 0
         for i in range(40, len(df)):
             window = df.iloc[max(0, i-90):i+1]
-            if len(window) < 40: continue
+            if len(window) < 40:
+                continue
             vol_ma = window['Volume'].rolling(20).mean()
             current_phase = "לא בתהליך איסוף"
             for j in range(1, len(window)):
@@ -366,20 +401,29 @@ class FactorEngine:
             phases.iloc[i] = current_phase
         return phases
 
-class NpEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.integer): return int(obj)
-        if isinstance(obj, np.floating): return float(obj)
-        if isinstance(obj, np.ndarray): return obj.tolist()
-        if isinstance(obj, pd.Timestamp): return obj.strftime("%Y-%m-%d")
-        if isinstance(obj, np.bool_): return bool(obj)
-        return super(NpEncoder, self).default(obj)
 
-def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=None, end=None, risk_profile="Balanced", stop_loss_pct=0.05, atr_multiplier=2.0):
+def run_wyckoff_anchored_backtest(
+    ticker,
+    use_ai,
+    threshold,
+    period=None,
+    start=None,
+    end=None,
+    risk_profile="Balanced",
+    stop_loss_pct=0.05,
+    atr_multiplier=2.0
+):
     df = get_data(ticker, period=period, start=start, end=end)
-    if df is None: return None, None
+    if df is None:
+        return None, None
     cfg_period = period if period else f"{start}/{end}"
-    engine = FactorEngine(BacktestConfig(period=cfg_period, stop_loss_pct=stop_loss_pct, atr_multiplier=atr_multiplier))
+    engine = FactorEngine(
+        BacktestConfig(
+            period=cfg_period,
+            stop_loss_pct=stop_loss_pct,
+            atr_multiplier=atr_multiplier
+        )
+    )
     factors = engine.compute(df)
     df['wyckoff_phase'] = engine.get_wyckoff_phase(df)
     df['cis_score'] = engine.composite_cis(factors, df)
@@ -390,7 +434,7 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
     low_close = (df['Low'] - df['Close'].shift(1)).abs()
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     atr_series = true_range.rolling(14).mean()
-    
+
     positions = []
     audit_logs = []
     in_position = False
@@ -400,13 +444,13 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
     peak_price = 0
     cis_at_entry = 0
     stop_loss_level = 0
-    
+
     for i in range(len(df)):
         current_phase = df['wyckoff_phase'].iloc[i]
         current_cis = df['cis_score'].iloc[i]
         phase_allowed = check_phase_entry_allowed(current_phase, risk_profile)
         score_allowed = current_cis >= threshold
-        
+
         if not in_position:
             if phase_allowed and score_allowed:
                 positions.append(1)
@@ -418,7 +462,10 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
                 cis_at_entry = current_cis
                 atr_val = atr_series.iloc[i] if not pd.isna(atr_series.iloc[i]) else 0
                 if atr_val > 0:
-                    stop_loss_level = min(entry_price * (1 - stop_loss_pct), entry_price - atr_val * atr_multiplier)
+                    stop_loss_level = min(
+                        entry_price * (1 - stop_loss_pct),
+                        entry_price - atr_val * atr_multiplier
+                    )
                 else:
                     stop_loss_level = entry_price * (1 - stop_loss_pct)
             else:
@@ -444,7 +491,7 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
                 })
                 in_position = False
                 continue
-                
+
             if "לא בתהליך" in current_phase or current_cis < threshold - 15:
                 positions.append(0)
                 exit_px = df['Close'].iloc[i]
@@ -468,7 +515,7 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
                 positions.append(1)
                 if df['Close'].iloc[i] > peak_price:
                     peak_price = df['Close'].iloc[i]
-                    
+
     df['Position'] = pd.Series(positions, index=df.index[:len(positions)]).shift(1).fillna(0)
     df['Strategy_Return'] = df['Position'] * df['Daily_Return']
     df['Cum_Strategy'] = (1 + df['Strategy_Return']).cumprod() - 1
