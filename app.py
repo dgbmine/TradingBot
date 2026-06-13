@@ -25,7 +25,6 @@ from auto_trainer import run_auto_trainer  # ייבוא האימון האוטו�
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
-# Force Reload Trigger: 1
 # ============================================================
 # קבועים ל-Auto Trainer Status
 # ============================================================
