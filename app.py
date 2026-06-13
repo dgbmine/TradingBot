@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.3 (AUTO-TRAINER + MONITOR UPGRADE)
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.4 (LIVE LOGS EDITION)
 # ============================================================
 import sys
 import os
@@ -20,17 +20,17 @@ from sklearn.preprocessing import LabelEncoder
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
-from scout_core import *  # כל הלוגיקה החישובית
-from auto_trainer import run_auto_trainer  # <--- ייבוא האימון האוטומטי
+from scout_core import * # כל הלוגיקה החישובית
+from auto_trainer import run_auto_trainer  # ייבוא האימון האוטומטי
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
 # ============================================================
 # קבועים ל-Auto Trainer Status
 # ============================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AUTO_TRAINER_STATUS_FILE = os.path.join(BASE_DIR, "models", "auto_trainer_status.json")
 AUTO_TRAINER_DONE_FLAG = os.path.join(BASE_DIR, "models", "auto_trainer.done")
+LOG_FILE_PATH = os.path.join(BASE_DIR, "auto_trainer_error.log")
 
 # ============================================================
 # פונקציות עזר שנשארות בקובץ הראשי (שמירה / טעינה)
@@ -149,7 +149,6 @@ SECTOR_MAP = {
     ]
 }
 
-# Universe של האימון האוטומטי
 TRAINING_UNIVERSE = {
     "Growth (צמיחה)": SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"],
     "Value/Index (ערך/מדד)": SECTOR_MAP["ערך ומדד (Value/Index)"],
@@ -214,11 +213,6 @@ if "use_ml" not in st.session_state: st.session_state.use_ml = False
 if "phase_encoder" not in st.session_state: st.session_state.phase_encoder = None
 if "model_archive" not in st.session_state: st.session_state.model_archive = load_all_models_from_disk()
 if "research_archive" not in st.session_state: st.session_state.research_archive = load_all_research_dfs_from_disk()
-
-def get_active_threshold_recommendation():
-    if st.session_state.use_ml and st.session_state.ml_metadata:
-        return st.session_state.ml_metadata.get("recommended_threshold", 65)
-    return 65
 
 def render_threshold_control(label, key):
     if key not in st.session_state: st.session_state[key] = 65
@@ -427,12 +421,10 @@ def screen_monitor():
     safe_slot = clean_filename(slot)
     csv_path = f"models/training_data_{safe_slot}.csv"
 
-    # Load Model Metadata
     model_data = st.session_state.model_archive[slot]
     model = model_data['model']
     meta = model_data['metadata']
 
-    # Load CSV Data
     df = pd.DataFrame()
     if os.path.exists(csv_path):
         df = pd.read_csv(csv_path)
@@ -465,7 +457,6 @@ def screen_monitor():
             ))
             fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
-            st.caption("📌 *הפיצ'רים החדשים (Regime_Filter, VIX_ZScore, Relative_Strength) מופיעים אוטומטית אם קיימים בבסיס הנתונים ומחושבים על ידי FactorEngine.*")
         else:
             st.info("המודל לא מכיל מידע על חשיבות פקטורים.")
 
@@ -483,7 +474,6 @@ def screen_monitor():
         else:
             st.info("אין מספיק נתונים להצגת התפלגות מניות.")
 
-    # -------------------------- VIX Distribution (FIXED) --------------------------
     st.markdown("---")
     st.markdown("### 📈 התפלגות VIX ברגעי עסקאות לעומת ממוצע היסטורי")
     
@@ -527,12 +517,10 @@ def screen_monitor():
                 plot_bgcolor='rgba(0,0,0,0)'
             )
             st.plotly_chart(fig_vix, use_container_width=True)
-            st.caption("🔍 *גרף זה מציג באיזו סביבת VIX המערכת נכנסה לעסקאות. VIX Z-Score חיובי = VIX גבוה מהממוצע ההיסטורי (פחד).*")
         else:
-            st.info("לא נמצאו נתוני VIX (f_macro_vix_zscore / vix_close) בקובץ האימון. ודא שה‑Auto‑Trainer רץ עם הורדת נתוני מאקרו.")
+            st.info("לא נמצאו נתוני VIX (f_macro_vix_zscore / vix_close) בקובץ האימון.")
     else:
         st.info("אין נתוני אימון זמינים להצגת התפלגות VIX.")
-    # --------------------------------------------------------------------------
 
     st.markdown("---")
     st.markdown("### 🕒 עסקאות אחרונות שנסרקו על ידי ה-Auto-Trainer")
@@ -547,7 +535,7 @@ def screen_monitor():
 # ============================================================
 def screen_ml_trainer():
     st.markdown("""<div class="header-box ml"><h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
-    <p>מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי עבר לקובץ auto_trainer.py וניטורו מתבצע כאן כסטטוס בלבד.</p></div>""", unsafe_allow_html=True)
+    <p>מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי המלא נמצא למטה.</p></div>""", unsafe_allow_html=True)
 
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
     c1, c2, c3 = st.columns(3)
@@ -664,10 +652,6 @@ def screen_ml_trainer():
             st.session_state.use_ml = True
 
             st.success(f"✅ אימון והוספה לספרייה הושלמו בהצלחה! מודל נשמר: {save_path}")
-            c_res1, c_res2, c_res3 = st.columns(3)
-            c_res1.metric("דיוק OOB (אמיתי)", f"{train_acc*100:.1f}%")
-            c_res2.metric("סה\"כ עסקאות בספריית הסקטור", len(combined_df))
-            c_res3.metric("🎯 Threshold מומלץ (AI)", optimal_th)
 
     st.markdown("---")
     st.markdown("### 🚦 Auto-Trainer Status")
@@ -679,34 +663,34 @@ def screen_ml_trainer():
     s3.metric("סקטור נוכחי", status.get("current_slot", "N/A"))
     s4.metric("עודכן", status.get("updated_at", "N/A"))
 
-    state = status.get("state", "idle")
-    message = status.get("message", "")
-
-    if state == "completed":
-        st.success(message or "האימון האוטומטי הסתיים בהצלחה.")
-    elif state == "running":
-        st.info(message or "האימון האוטומטי רץ כרגע בקובץ auto_trainer.py.")
-    elif state == "error":
-        st.error(message or "האימון האוטומטי נכשל.")
-    else:
-        st.warning(message or "אין ריצה פעילה כרגע.")
-
-    if st.button("🔄 רענן סטטוס", use_container_width=True):
-        st.session_state.model_archive = load_all_models_from_disk()
-        st.rerun()
-
-    # -------------------------- NEW: Auto Trainer Launch Button --------------------------
+    # -------------------------- Auto Trainer Launch Button & Live Logs --------------------------
     st.markdown("---")
     st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
+    
     if st.button("🚀 הזנק אימון אוטומטי מלא", type="primary", use_container_width=True):
-        with st.spinner("האימון רץ ברקע... נא לעקוב ב-Monitor"):
+        with st.spinner("האימון רץ ברקע... תוכל לעקוב ביומן למטה."):
             try:
                 run_auto_trainer()
-                st.success("✅ האימון האוטומטי הושלם. נא לרענן את המודלים.")
+                st.success("✅ האימון האוטומטי הושלם בהצלחה!")
             except Exception as e:
-                st.error(f"❌ האימון האוטומטי נכשל: {e}")
+                st.error("❌ האימון האוטומטי נכשל. פתח את היומן למטה כדי לראות את השגיאה.")
+        
         st.session_state.model_archive = load_all_models_from_disk()
         st.rerun()
+
+    # תצוגת לוגים ישירות ב-UI
+    if os.path.exists(LOG_FILE_PATH):
+        with st.expander("📝 יומן ריצה ושגיאות (Live Logs)", expanded=True):
+            try:
+                with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
+                    logs = f.read()
+                st.text_area("העתק מכאן את השגיאה אם האימון נכשל (מציג את ה-5000 תווים האחרונים):", logs[-5000:], height=300)
+                
+                if st.button("🗑️ נקה יומן"):
+                    open(LOG_FILE_PATH, 'w').close()
+                    st.rerun()
+            except Exception as e:
+                st.warning(f"לא ניתן לקרוא את קובץ הלוג: {e}")
     # ------------------------------------------------------------------------------------
 
 routes = {
