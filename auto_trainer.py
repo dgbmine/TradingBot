@@ -1,5 +1,5 @@
 # ============================================================
-# auto_trainer.py - BULLETPROOF EDITION (SET-IMMUNE)
+# auto_trainer.py - ABSOLUTELY NO .items() VERSION
 # ============================================================
 import os
 import sys
@@ -55,7 +55,6 @@ SCAN_UNIVERSE = list(dict.fromkeys([
 ]))
 
 SECTOR_MAP = {
-    "הכול (כל השוק האמריקאי)": SCAN_UNIVERSE,
     "צמיחה וטכנולוגיה (Growth)": [
         "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
         "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
@@ -79,16 +78,6 @@ SECTOR_MAP = {
         "GLD", "SLV"
     ]
 }
-
-# ============================================================
-# 💡 שימוש ברשימת Tuples – מונע כל אפשרות ל-items()
-#    + הגנה אוטומטית למקרה שהמשתנה השתבש
-# ============================================================
-SECTORS_TO_TRAIN = [
-    ("Growth (צמיחה)", SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"]),
-    ("Value/Index (ערך/מדד)", SECTOR_MAP["ערך ומדד (Value/Index)"]),
-    ("Commodities (סחורות)", SECTOR_MAP["סחורות ואנרגיה (Commodities)"])
-]
 
 def save_model_to_disk(slot_name, model, metadata, encoder):
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -164,22 +153,22 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                 if entry_dt in df.index:
                     window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
                     factors = engine.compute(window_df)
-                    
+
                     if len(factors) > 0:
                         factors = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
                         feature_row = factors.iloc[-1].to_dict()
-                        
+
                         raw_phase = df.loc[entry_dt]["wyckoff_phase"]
                         if isinstance(raw_phase, pd.Series):
                             raw_phase = raw_phase.iloc[-1]
-                            
+
                         feature_row["phase"] = raw_phase
                         feature_row["label"] = 1 if trade["win"] else 0
                         feature_row["ticker"] = ticker
                         feature_row["entry_date"] = trade["entry_date"]
                         features_list.append(feature_row)
                         added_trades += 1
-                        
+
         except Exception as e:
             errors += 1
             continue
@@ -189,6 +178,15 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
 
 
 def run_auto_trainer():
+    # =====================
+    # תיקון מוחלט: כל הסקטורים מוגדרים פה ישירות
+    # =====================
+    sectors = [
+        ("Growth (צמיחה)", SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"]),
+        ("Value/Index (ערך/מדד)", SECTOR_MAP["ערך ומדד (Value/Index)"]),
+        ("Commodities (סחורות)", SECTOR_MAP["סחורות ואנרגיה (Commodities)"])
+    ]
+
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write(f"=== התחלת ריצת Auto Trainer: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
 
@@ -207,28 +205,18 @@ def run_auto_trainer():
     start_date = start_date_dt.strftime("%Y-%m-%d")
     end_date = end_date_dt.strftime("%Y-%m-%d")
     base_threshold = 50
-
-    # ⚠️ הגנה מוחלטת: מוודאים ש-SECTORS_TO_TRAIN הוא רשימת צמדים, לא set/dict
-    sectors = SECTORS_TO_TRAIN
-    if isinstance(sectors, set):
-        log_message("אזהרה: SECTORS_TO_TRAIN הוא set, ממיר לרשימה.")
-        sectors = list(sectors)
-    elif isinstance(sectors, dict):
-        log_message("אזהרה: SECTORS_TO_TRAIN הוא dict, ממיר לרשימת צמדים.")
-        sectors = list(sectors.items())
-    elif not isinstance(sectors, list):
-        # כל דבר אחר – נמיר לרשימה ריקה כדי לא לקרוס
-        log_message(f"שגיאה קריטית: SECTORS_TO_TRAIN הוא מטיפוס {type(sectors)}. מפעיל רשימה ריקה.")
-        sectors = []
     total_sectors = len(sectors)
 
     try:
-        for sector_idx, (slot, tickers) in enumerate(sectors, start=1):
+        for sector_idx in range(total_sectors):
+            slot = sectors[sector_idx][0]
+            tickers = sectors[sector_idx][1]
+
             log_message(f"מתחיל סקטור: {slot}")
             write_status(
                 state="running",
                 message=f"מעבד סקטור: {slot}",
-                progress=int(((sector_idx - 1) / total_sectors) * 100),
+                progress=int((sector_idx / total_sectors) * 100),
                 current_slot=slot,
                 started_at=started_at
             )
@@ -271,7 +259,7 @@ def run_auto_trainer():
                 drop_cols = ["phase", "label", "ticker", "entry_date"]
                 tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns])
                 tech_factors = tech_factors.select_dtypes(include=[np.number])
-                
+
                 X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1)
                 X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
 
