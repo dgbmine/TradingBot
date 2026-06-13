@@ -1,5 +1,5 @@
 # ============================================================
-# auto_trainer.py - ABSOLUTELY NO .items() VERSION
+# auto_trainer.py - FINAL DIAGNOSTIC VERSION
 # ============================================================
 import os
 import sys
@@ -7,6 +7,7 @@ import json
 import time
 import pickle
 import traceback
+import hashlib
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -27,6 +28,11 @@ LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
 def log_message(msg):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
+
+# רשם את ה-hash של הקובץ הזה ללוג – לאימות גרסה
+with open(__file__, "rb") as f:
+    FILE_HASH = hashlib.md5(f.read()).hexdigest()
+log_message(f"auto_trainer.py loaded, hash={FILE_HASH}")
 
 from scout_core import *
 
@@ -178,14 +184,19 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
 
 
 def run_auto_trainer():
-    # =====================
-    # תיקון מוחלט: כל הסקטורים מוגדרים פה ישירות
-    # =====================
+    # ===============================
+    # אבחון: רשום type ו־hash (וודא שזה קובץ חדש)
+    # ===============================
+    log_message(f"run_auto_trainer הופעל, file hash={FILE_HASH}")
+
     sectors = [
         ("Growth (צמיחה)", SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"]),
         ("Value/Index (ערך/מדד)", SECTOR_MAP["ערך ומדד (Value/Index)"]),
         ("Commodities (סחורות)", SECTOR_MAP["סחורות ואנרגיה (Commodities)"])
     ]
+
+    # וידוא טיפוס
+    log_message(f"type of sectors: {type(sectors)}")
 
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write(f"=== התחלת ריצת Auto Trainer: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
