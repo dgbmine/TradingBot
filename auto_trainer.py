@@ -1,5 +1,5 @@
 # ============================================================
-# auto_trainer.py - ROBUST CLOUD EDITION
+# auto_trainer.py - BULLETPROOF EDITION
 # ============================================================
 import os
 import sys
@@ -19,11 +19,9 @@ try:
 except ImportError:
     yf = None
 
-# מוסיף את התיקייה הנוכחית ל-Path כדי לוודא ש-scout_core יימצא
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
 
-# הגדרת יומן שגיאות מקומי
 LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
 
 def log_message(msg):
@@ -82,11 +80,12 @@ SECTOR_MAP = {
     ]
 }
 
-TRAINING_UNIVERSE = {
-    "Growth (צמיחה)": SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"],
-    "Value/Index (ערך/מדד)": SECTOR_MAP["ערך ומדד (Value/Index)"],
-    "Commodities (סחורות)": SECTOR_MAP["סחורות ואנרגיה (Commodities)"]
-}
+# במקום מילון, אנחנו משתמשים ברשימה של צמדים (Tuples) כדי למנוע את פונקציית ה-.items()
+SECTORS_TO_TRAIN = [
+    ("Growth (צמיחה)", SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"]),
+    ("Value/Index (ערך/מדד)", SECTOR_MAP["ערך ומדד (Value/Index)"]),
+    ("Commodities (סחורות)", SECTOR_MAP["סחורות ואנרגיה (Commodities)"])
+]
 
 def save_model_to_disk(slot_name, model, metadata, encoder):
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -164,12 +163,10 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                     factors = engine.compute(window_df)
                     
                     if len(factors) > 0:
-                        # ניקוי ערכים רעילים שעלולים לקרוס את המודל
                         factors = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
                         feature_row = factors.iloc[-1].to_dict()
                         
                         raw_phase = df.loc[entry_dt]["wyckoff_phase"]
-                        # הגנה מפני תאריכים כפולים שיוצרים Series במקום ערך בודד
                         if isinstance(raw_phase, pd.Series):
                             raw_phase = raw_phase.iloc[-1]
                             
@@ -189,7 +186,6 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
 
 
 def run_auto_trainer():
-    # פתיחת יומן חדש
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write(f"=== התחלת ריצת Auto Trainer: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
 
@@ -208,10 +204,11 @@ def run_auto_trainer():
     start_date = start_date_dt.strftime("%Y-%m-%d")
     end_date = end_date_dt.strftime("%Y-%m-%d")
     base_threshold = 50
-    total_sectors = len(TRAINING_UNIVERSE)
+    total_sectors = len(SECTORS_TO_TRAIN)
 
     try:
-        for sector_idx, (slot, tickers) in enumerate(TRAINING_UNIVERSE.items(), start=1):
+        # כאן הסרנו את הקריאה הבעייתית ל-.items()
+        for sector_idx, (slot, tickers) in enumerate(SECTORS_TO_TRAIN, start=1):
             log_message(f"מתחיל סקטור: {slot}")
             write_status(state="running", message=f"מעבד סקטור: {slot}", progress=int(((sector_idx - 1) / total_sectors) * 100), current_slot=slot, started_at=started_at)
 
