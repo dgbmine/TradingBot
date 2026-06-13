@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.4 (LIVE LOGS EDITION)
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.5 (DIAGNOSTICS EDITION)
 # ============================================================
 import sys
 import os
@@ -668,29 +668,32 @@ def screen_ml_trainer():
     st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
     
     if st.button("🚀 הזנק אימון אוטומטי מלא", type="primary", use_container_width=True):
-        with st.spinner("האימון רץ ברקע... תוכל לעקוב ביומן למטה."):
+        with st.spinner("האימון רץ ברקע... אל תרענן את הדף."):
             try:
                 run_auto_trainer()
                 st.success("✅ האימון האוטומטי הושלם בהצלחה!")
+                st.session_state.model_archive = load_all_models_from_disk()
+                time.sleep(2)
+                st.rerun()
             except Exception as e:
-                st.error("❌ האימון האוטומטי נכשל. פתח את היומן למטה כדי לראות את השגיאה.")
-        
-        st.session_state.model_archive = load_all_models_from_disk()
-        st.rerun()
+                import traceback
+                st.error("❌ האימון האוטומטי קבר את עצמו. הנה השגיאה המדויקת:")
+                st.code(traceback.format_exc(), language="text")
 
     # תצוגת לוגים ישירות ב-UI
-    if os.path.exists(LOG_FILE_PATH):
-        with st.expander("📝 יומן ריצה ושגיאות (Live Logs)", expanded=True):
+    with st.expander("📝 יומן ריצה ושגיאות (Live Logs)", expanded=False):
+        if os.path.exists(LOG_FILE_PATH):
             try:
                 with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
                     logs = f.read()
-                st.text_area("העתק מכאן את השגיאה אם האימון נכשל (מציג את ה-5000 תווים האחרונים):", logs[-5000:], height=300)
-                
+                st.text_area("היומן המלא:", logs[-5000:], height=300)
                 if st.button("🗑️ נקה יומן"):
                     open(LOG_FILE_PATH, 'w').close()
                     st.rerun()
             except Exception as e:
                 st.warning(f"לא ניתן לקרוא את קובץ הלוג: {e}")
+        else:
+            st.info("קובץ היומן עדיין לא נוצר. הוא יופיע כאן ברגע שהאימון יתחיל.")
     # ------------------------------------------------------------------------------------
 
 routes = {
