@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.2
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.3 (AUTO-TRAINER + MONITOR UPGRADE)
 # ============================================================
 import sys
 import os
@@ -17,9 +17,11 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 
 # מוסיף את התיקייה הנוכחית ל-Path של Python כדי לוודא ש-scout_core יימצא
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(BASE_DIR)
 
 from scout_core import *  # כל הלוגיקה החישובית
+from auto_trainer import run_auto_trainer  # <--- ייבוא האימון האוטומטי
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
@@ -463,6 +465,7 @@ def screen_monitor():
             ))
             fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
+            st.caption("📌 *הפיצ'רים החדשים (Regime_Filter, VIX_ZScore, Relative_Strength) מופיעים אוטומטית אם קיימים בבסיס הנתונים ומחושבים על ידי FactorEngine.*")
         else:
             st.info("המודל לא מכיל מידע על חשיבות פקטורים.")
 
@@ -480,6 +483,57 @@ def screen_monitor():
         else:
             st.info("אין מספיק נתונים להצגת התפלגות מניות.")
 
+    # -------------------------- NEW: VIX Distribution --------------------------
+    st.markdown("---")
+    st.markdown("### 📈 התפלגות VIX ברגעי עסקאות לעומת ממוצע היסטורי")
+    
+    if not df.empty:
+        # Check for VIX_ZScore or VIX_Close in the columns
+        vix_col = None
+        if 'VIX_ZScore' in df.columns:
+            vix_col = 'VIX_ZScore'
+            label = 'VIX Z-Score (סטיית תקן מהממוצע)'
+        elif 'VIX_Close' in df.columns:
+            vix_col = 'VIX_Close'
+            label = 'VIX Close (ערך נקוב)'
+        
+        if vix_col:
+            fig_vix = go.Figure()
+            mean_vix = df[vix_col].mean()
+            
+            fig_vix.add_trace(go.Histogram(
+                x=df[vix_col], 
+                nbinsx=25, 
+                name=f'התפלגות {label}',
+                marker_color='#7b1fa2',
+                opacity=0.75
+            ))
+            
+            fig_vix.add_vline(
+                x=mean_vix, 
+                line_dash="dash", 
+                line_color="#ef5350",
+                annotation_text=f"ממוצע: {mean_vix:.2f}",
+                annotation_position="top right"
+            )
+            
+            fig_vix.update_layout(
+                title=f"התפלגות {label} ברגע כניסה לעסקה",
+                xaxis_title=label,
+                yaxis_title="תדירות",
+                margin=dict(l=0, r=0, t=40, b=0),
+                height=350,
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)'
+            )
+            st.plotly_chart(fig_vix, use_container_width=True)
+            st.caption("🔍 *גרף זה מציג באיזו סביבת VIX המערכת נכנסה לעסקאות. VIX Z-Score חיובי = VIX גבוה מהממוצע ההיסטורי (פחד).*")
+        else:
+            st.info("לא נמצאו נתוני VIX (VIX_Close או VIX_ZScore) בקובץ האימון. ודא שה-Auto-Trainer החדש רץ עם הורדת נתוני מאקרו.")
+    else:
+        st.info("אין נתוני אימון זמינים להצגת התפלגות VIX.")
+    # --------------------------------------------------------------------------
+
     st.markdown("---")
     st.markdown("### 🕒 עסקאות אחרונות שנסרקו על ידי ה-Auto-Trainer")
     if not df.empty:
@@ -489,7 +543,7 @@ def screen_monitor():
         st.dataframe(show_df, use_container_width=True)
 
 # ============================================================
-# מסך ML Trainer – אימון ידני + סטטוס בלבד לאוטו-טריינר
+# מסך ML Trainer – אימון ידני + סטטוס + כפתור הזנקה לאוטו-טריינר
 # ============================================================
 def screen_ml_trainer():
     st.markdown("""<div class="header-box ml"><h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
@@ -640,6 +694,20 @@ def screen_ml_trainer():
     if st.button("🔄 רענן סטטוס", use_container_width=True):
         st.session_state.model_archive = load_all_models_from_disk()
         st.rerun()
+
+    # -------------------------- NEW: Auto Trainer Launch Button --------------------------
+    st.markdown("---")
+    st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
+    if st.button("🚀 הזנק אימון אוטומטי מלא", type="primary", use_container_width=True):
+        with st.spinner("האימון רץ ברקע... נא לעקוב ב-Monitor"):
+            try:
+                run_auto_trainer()
+                st.success("✅ האימון האוטומטי הושלם. נא לרענן את המודלים.")
+            except Exception as e:
+                st.error(f"❌ האימון האוטומטי נכשל: {e}")
+        st.session_state.model_archive = load_all_models_from_disk()
+        st.rerun()
+    # ------------------------------------------------------------------------------------
 
 routes = {
     "wyckoff": screen_wyckoff,
