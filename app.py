@@ -143,12 +143,10 @@ def load_all_research_dfs_from_disk():
     return archive
 
 def calculate_optimal_threshold(model, X, y):
-    """מוצא את הציון סף שנותן את ה-Win Rate הכי טוב תוך שמירה על כמות עסקאות סבירה"""
     try:
         probs = model.predict_proba(X)[:, 1] * 100
     except:
         return 65
-    
     best_thresh = 65
     best_score = 0
     for th in range(50, 95, 2):
@@ -163,44 +161,32 @@ def calculate_optimal_threshold(model, X, y):
     return best_thresh
 
 def build_research_ground_truth(bt_df, audit_df, window_days=180):
-    """
-    יוצר שכבת Ground Truth מחקרית על בסיס כל עסקה:
-    future_max_return, future_max_drawdown, breakout_confirmed, markup_confirmed,
-    relative_strength_confirmed, research_label
-    """
     if bt_df is None or audit_df is None or audit_df.empty:
         return pd.DataFrame()
-
     bt_df = bt_df.copy()
     bt_df.index = pd.to_datetime(bt_df.index).tz_localize(None)
     enriched = []
-    
     for _, trade in audit_df.iterrows():
         try:
             entry_ts = pd.Timestamp(trade["entry_date"])
             exit_ts = pd.Timestamp(trade["exit_date"])
             if entry_ts not in bt_df.index:
                 continue
-                
             entry_px = float(trade.get("entry_price", bt_df.loc[entry_ts, "Close"]))
             eval_end = min(entry_ts + pd.Timedelta(days=window_days), bt_df.index.max())
             future = bt_df.loc[entry_ts:eval_end].copy()
             if future.empty:
                 continue
-                
             prior_start = entry_ts - pd.DateOffset(months=6)
             prior = bt_df.loc[prior_start:entry_ts].copy()
             if prior.empty:
                 prior = bt_df.loc[:entry_ts].tail(126).copy()
-                
             future_max_close = float(future["Close"].max())
             future_min_close = float(future["Close"].min())
             future_max_return = round((future_max_close / entry_px - 1) * 100, 2)
             future_max_drawdown = round((future_min_close / entry_px - 1) * 100, 2)
-            
             prior_high = prior["High"].max() if not prior.empty else np.nan
             prior_vol_ma20 = prior["Volume"].rolling(20).mean().iloc[-1] if len(prior) >= 20 else prior["Volume"].mean()
-            
             breakout_confirmed = False
             days_to_breakout = None
             if pd.notna(prior_high):
@@ -214,20 +200,16 @@ def build_research_ground_truth(bt_df, audit_df, window_days=180):
                     breakout_idx = breakout_mask[breakout_mask].index[0]
                     breakout_confirmed = True
                     days_to_breakout = int((pd.Timestamp(breakout_idx) - entry_ts).days)
-                    
             markup_confirmed = future["wyckoff_phase"].astype(str).str.contains(
                 "Spring|LPS|SOS|Breakout", regex=True
             ).any()
-            
             volume_expansion_confirmed = bool(
                 pd.notna(prior_vol_ma20) and future["Volume"].max() > (prior_vol_ma20 * 1.2)
             )
-            
             relative_strength_confirmed = bool(
                 len(future) >= 10 and
                 future["Close"].iloc[-1] > future["Close"].rolling(50, min_periods=10).mean().iloc[-1]
             )
-            
             if trade.get("exit_type") == "Pattern_Recognition_Failure":
                 research_label = "False_Positive"
             elif future_max_return >= 30 and breakout_confirmed and markup_confirmed and volume_expansion_confirmed:
@@ -236,7 +218,6 @@ def build_research_ground_truth(bt_df, audit_df, window_days=180):
                 research_label = "Possible_Accumulation"
             else:
                 research_label = "False_Positive"
-                
             enriched.append({
                 **trade.to_dict(),
                 "future_max_return": future_max_return,
@@ -251,7 +232,6 @@ def build_research_ground_truth(bt_df, audit_df, window_days=180):
             })
         except Exception:
             continue
-            
     return pd.DataFrame(enriched)
 
 for k, v in [("mode", "wyckoff"), ("ml_model", None), ("ml_metadata", None), ("use_ml", False), ("phase_encoder", None)]:
@@ -264,7 +244,6 @@ if "model_archive" not in st.session_state:
 if "research_archive" not in st.session_state:
     st.session_state.research_archive = load_all_research_dfs_from_disk()
 
-# משיכת סף מומלץ מהמודל הפעיל (לשימוש בבוררים השונים)
 def get_active_threshold_recommendation():
     if st.session_state.use_ml and st.session_state.ml_metadata:
         return st.session_state.ml_metadata.get("recommended_threshold", 65)
@@ -274,22 +253,46 @@ def get_active_threshold_recommendation():
 # עזר UI: תצוגת Threshold משודרגת
 # ============================================================
 def render_threshold_control(label, current_value, min_value, max_value, key_prefix):
+    slider_key = f"{key_prefix}_slider"
+    num_key = f"{key_prefix}_num"
+    start_value = int(np.clip(int(current_value), min_value, max_value))
+
+    if slider_key not in st.session_state:
+        st.session_state[slider_key] = start_value
+    if num_key not in st.session_state:
+        st.session_state[num_key] = start_value
+
     st.markdown(f"**{label}**")
-    st.write(f"ערך נוכחי: **{int(current_value)}**")
     col_slider, col_num = st.columns([4, 1])
+
     with col_slider:
         value = st.slider(
-            "", min_value, max_value, int(current_value),
-            key=f"{key_prefix}_slider",
+            "",
+            min_value=min_value,
+            max_value=max_value,
+            value=int(st.session_state[slider_key]),
+            key=slider_key,
             help=f"טווח בחירה: {min_value}-{max_value}",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
+
+    st.session_state[num_key] = int(value)
+
     with col_num:
         st.number_input(
-            "ערך", min_value=min_value, max_value=max_value, value=int(value), step=1, format="%d",
-            disabled=True, key=f"{key_prefix}_num", label_visibility="collapsed"
+            "ערך",
+            min_value=min_value,
+            max_value=max_value,
+            value=int(st.session_state[num_key]),
+            step=1,
+            format="%d",
+            disabled=True,
+            key=num_key,
+            label_visibility="collapsed",
         )
-    return value
+
+    st.caption(f"ערך נוכחי: {int(value)}")
+    return int(value)
 
 # ============================================================
 # חלק 5: בורר ה-AI
@@ -363,7 +366,8 @@ class FactorEngine:
 
     def _compute_quick_wyckoff(self, df: pd.DataFrame) -> pd.Series:
         score = pd.Series(0.0, index=df.index)
-        if len(df) < 40: return score
+        if len(df) < 40:
+            return score
         spread = df['High'] - df['Low']
         vol_ma = df['Volume'].rolling(20).mean()
         has_sc, has_ar, has_st = False, False, False
@@ -471,7 +475,6 @@ class FactorEngine:
                 if col in factors.columns:
                     score += factors[col].clip(-1, 1) * weight
             score = (score / tot * 100 + 50).clip(0, 100)
-            
         if "f36_wyckoff_score" in factors.columns:
             wyckoff_score = factors["f36_wyckoff_score"]
             boost_floor = np.where(wyckoff_score >= 0.9, 65.0, 0.0)
@@ -653,13 +656,11 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
     df['wyckoff_phase'] = engine.get_wyckoff_phase(df)
     df['cis_score'] = engine.composite_cis(factors, df)
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
-
     high_low = df['High'] - df['Low']
     high_close = (df['High'] - df['Close'].shift(1)).abs()
     low_close = (df['Low'] - df['Close'].shift(1)).abs()
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     atr_series = true_range.rolling(14).mean()
-    
     positions = []
     audit_logs = []
     in_position = False
@@ -669,13 +670,11 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
     peak_price = 0
     cis_at_entry = 0
     stop_loss_level = 0
-    
     for i in range(len(df)):
         current_phase = df['wyckoff_phase'].iloc[i]
         current_cis = df['cis_score'].iloc[i]
         phase_allowed = check_phase_entry_allowed(current_phase, risk_profile)
         score_allowed = current_cis >= threshold
-        
         if not in_position:
             if phase_allowed and score_allowed:
                 positions.append(1)
@@ -713,7 +712,6 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
                 })
                 in_position = False
                 continue
-                
             if "לא בתהליך" in current_phase or current_cis < threshold - 15:
                 positions.append(0)
                 exit_px = df['Close'].iloc[i]
@@ -737,7 +735,6 @@ def run_wyckoff_anchored_backtest(ticker, use_ai, threshold, period=None, start=
                 positions.append(1)
                 if df['Close'].iloc[i] > peak_price:
                     peak_price = df['Close'].iloc[i]
-                    
     df['Position'] = pd.Series(positions, index=df.index[:len(positions)]).shift(1).fillna(0)
     df['Strategy_Return'] = df['Position'] * df['Daily_Return']
     df['Cum_Strategy'] = (1 + df['Strategy_Return']).cumprod() - 1
@@ -750,7 +747,6 @@ def screen_backtest():
     col_r1, col_r2 = st.columns([1, 2])
     with col_r1:
         risk_profile = st.selectbox("🎯 Risk Profile:", ["Aggressive", "Balanced", "Conservative"], index=1)
-        
     rec_th = get_active_threshold_recommendation()
     c1, c2, c3 = st.columns([2, 1.5, 1])
     with c1:
@@ -761,28 +757,23 @@ def screen_backtest():
             int(rec_th) if isinstance(rec_th, (int, float)) else 65,
             40, 95, "bt_threshold"
         )
-        
     if st.button("▶ הרץ סימולציה", use_container_width=True, type="primary"):
         with st.spinner("מריץ..."):
             bt_df, audit_df = run_wyckoff_anchored_backtest(ticker.upper(), st.session_state.use_ml, bt_threshold, period="2y", risk_profile=risk_profile)
             if bt_df is None:
                 st.error("שגיאה בנתונים.")
                 return
-                
             s_ret = bt_df['Cum_Strategy'].iloc[-1]
             t_count = len(audit_df)
             w_rate = len(audit_df[audit_df['win'] == True]) / t_count if t_count > 0 else 0
-            
             c_m1, c_m2, c_m3 = st.columns(3)
             c_m1.metric("מס' עסקאות", t_count)
             c_m2.metric("Win Rate", f"{w_rate:.1%}" if t_count > 0 else "N/A")
             c_m3.metric("תשואה", f"{s_ret:.2%}")
-            
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], name='Wyckoff Strategy', line=dict(color='#00ff00')))
             fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], name='Baseline', line=dict(color='#888888', dash='dot')))
             st.plotly_chart(fig, use_container_width=True)
-            
             if not audit_df.empty:
                 st.markdown("### 📋 Audit Logs")
                 for _, row in audit_df.iterrows():
@@ -797,19 +788,16 @@ def screen_scanner():
     st.markdown("""<div class="header-box scanner"><h2>🔎 MARKET SCANNER</h2></div>""", unsafe_allow_html=True)
     render_active_ai_selector_widget("scan_screen")
     rec_th = get_active_threshold_recommendation()
-    
     c1, c2 = st.columns([2, 1])
     with c1:
         chosen_universe = SECTOR_MAP[st.selectbox("📀 בחר סקטור:", list(SECTOR_MAP.keys()), key="scanner_sector")]
     with c2:
         scan_limit = st.slider("כמות מניות:", 5, len(chosen_universe), min(10, len(chosen_universe)), step=5)
-        
     scan_th = render_threshold_control(
         "סף כניסה (Threshold) לסינון התוצאות:",
         int(rec_th) if isinstance(rec_th, (int, float)) else 65,
         40, 95, "scan_threshold"
     )
-    
     if st.button("🚀 התחל סריקה", use_container_width=True, type="primary"):
         results = []
         engine = FactorEngine(BacktestConfig())
@@ -823,7 +811,6 @@ def screen_scanner():
                 if score >= scan_th:
                     results.append({"Ticker": ticker, "Score": round(score, 1), "Phase": phase})
             progress.progress((i + 1) / scan_limit)
-            
         if results:
             st.success(f"נמצאו {len(results)} מניות שעוברות את רף הציון {scan_th}:")
             st.dataframe(pd.DataFrame(results).sort_values("Score", ascending=False), use_container_width=True)
@@ -831,21 +818,20 @@ def screen_scanner():
             st.warning(f"אף מניה לא חצתה את רף הציון של {scan_th}.")
 
 # ============================================================
-# חלק 11 & 12: ML TRAINER (Closed-Loop) + Research Ground Truth
+# חלק 11 & 12: ML TRAINER
 # ============================================================
-def screen_vp(): 
+def screen_vp():
     st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2></div>""", unsafe_allow_html=True)
 
-def screen_vwap(): 
+def screen_vwap():
     st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2></div>""", unsafe_allow_html=True)
 
-def screen_composite(): 
+def screen_composite():
     st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2></div>""", unsafe_allow_html=True)
 
 def screen_ml_trainer():
     st.markdown("""<div class="header-box ml"><h2>🧠 WYCKOFF-ANCHORED ML TRAINER</h2>
     <p>מערכת אימון מוסדית עם כיול אוטומטי של סף ציון הכניסה.</p></div>""", unsafe_allow_html=True)
-    
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
     st.markdown("### 🚀 הגדרות אימון")
     c1, c2, c3 = st.columns(3)
@@ -855,7 +841,6 @@ def screen_ml_trainer():
         target_slot = st.selectbox("משבצת אסטרטגית:", MODEL_SLOTS)
     with c3:
         train_risk = st.selectbox("רמת סיכון לסינון הבק-טסט:", ["Aggressive", "Balanced", "Conservative"])
-        
     c4, c5, c6 = st.columns(3)
     with c4:
         start_date = st.date_input("מתאריך:", value=datetime(2020, 1, 1))
@@ -866,7 +851,6 @@ def screen_ml_trainer():
             "סף כניסה בסיסי לשאיבת עסקאות:",
             50, 40, 95, "base_threshold"
         )
-        
     if st.button("🚀 התחל למידה וכיול Threshold", use_container_width=True, type="primary"):
         with st.spinner("שואב עסקאות עבר ומאמן את המודל..."):
             df = yf.Ticker(train_ticker.upper()).history(start=start_date, end=end_date)
@@ -874,18 +858,19 @@ def screen_ml_trainer():
                 st.error("אין מספיק נתונים לחלון הזמן המבוקש.")
                 return
             df.index = pd.to_datetime(df.index).tz_localize(None)
-            
             engine = FactorEngine(BacktestConfig())
             bt_df, audit_df = run_wyckoff_anchored_backtest(
-                train_ticker.upper(), use_ai=False, threshold=base_th, period=None,
-                start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'),
+                train_ticker.upper(),
+                use_ai=False,
+                threshold=base_th,
+                period=None,
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d'),
                 risk_profile=train_risk
             )
-            
             if audit_df is None or audit_df.empty:
                 st.error("לא היו עסקאות בתקופה. נסה להוריד את הסף הבסיסי או לשנות פרופיל סיכון לאגרסיבי.")
                 return
-                
             features_list, labels = [], []
             for _, trade in audit_df.iterrows():
                 entry_dt = pd.Timestamp(trade['entry_date'])
@@ -897,11 +882,9 @@ def screen_ml_trainer():
                         feature_row['phase'] = bt_df.loc[entry_dt]['wyckoff_phase']
                         features_list.append(feature_row)
                         labels.append(1 if trade['win'] else 0)
-                        
             if len(features_list) < 5:
                 st.error("מעט מדי עסקאות לאימון. שנה פרמטרים.")
                 return
-                
             feature_df = pd.DataFrame(features_list)
             le = LabelEncoder()
             phase_encoded = le.fit_transform(feature_df['phase'].fillna("לא בתהליך איסוף"))
@@ -909,12 +892,10 @@ def screen_ml_trainer():
             tech_factors = feature_df.drop(columns=['phase']).select_dtypes(include=[np.number])
             X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).fillna(0)
             y = np.array(labels)
-            
             model = RandomForestClassifier(n_estimators=150, max_depth=5, random_state=42, n_jobs=-1)
             model.fit(X, y)
             train_acc = model.score(X, y)
             optimal_th = calculate_optimal_threshold(model, X, y)
-            
             meta = {
                 "train_ticker": train_ticker.upper(),
                 "train_acc": train_acc,
@@ -924,35 +905,29 @@ def screen_ml_trainer():
                 "num_trades": len(features_list),
                 "recommended_threshold": optimal_th
             }
-            
             save_path = save_model_to_disk(target_slot, model, meta, le)
             st.session_state.model_archive = load_all_models_from_disk()
             st.session_state.ml_model = model
             st.session_state.ml_metadata = meta
             st.session_state.phase_encoder = le
             st.session_state.use_ml = True
-            
             research_df = build_research_ground_truth(bt_df, audit_df, window_days=180)
             research_save_path = None
             if research_df is not None and not research_df.empty:
                 research_save_path = save_research_df_to_disk(target_slot, research_df)
-                
             st.session_state.research_archive = load_all_research_dfs_from_disk()
             st.success(f"✅ אימון הושלם בהצלחה! מודל נשמר: {save_path}")
             if research_save_path:
                 st.success(f"🧪 שכבת המחקר נשמרה: {research_save_path}")
-                
             c_res1, c_res2, c_res3 = st.columns(3)
             c_res1.metric("דיוק אימון", f"{train_acc*100:.1f}%")
             c_res2.metric("כמות עסקאות שנלמדו", len(features_list))
             c_res3.metric("🎯 Threshold מומלץ (AI)", optimal_th)
             st.info("💡 שים לב: כשסף ה-Threshold המומלץ יפסיק להשתנות מאימון לאימון (על אותה מניה/סקטור), תדע שהמודל הגיע למיצוי ההבנה שלו את השוק (Convergence).")
-            
             st.markdown("---")
             st.markdown("### 📥 ייצוא דו\"ח אימון (JSON)")
             research_audit_df = build_research_ground_truth(bt_df, audit_df, window_days=180)
             audit_payload = research_audit_df.to_dict("records") if not research_audit_df.empty else audit_df.to_dict("records")
-            
             export_json = {
                 "config": {
                     "ticker": train_ticker,
@@ -978,7 +953,6 @@ def screen_ml_trainer():
                     "false_positive": int((research_audit_df["research_label"] == "False_Positive").sum()) if not research_audit_df.empty else 0
                 }
             }
-            
             json_str = json.dumps(export_json, cls=NpEncoder, ensure_ascii=False, indent=2)
             st.download_button(
                 label="📥 הורד JSON של האימון",
@@ -987,14 +961,12 @@ def screen_ml_trainer():
                 mime="application/json",
                 use_container_width=True
             )
-            
     st.markdown("---")
     st.markdown("### 📦 מודלים קיימים במערכת")
     if st.session_state.model_archive:
         for slot_name, data in st.session_state.model_archive.items():
             meta = data["metadata"]
             st.markdown(f"- **{slot_name}**: אומן על {meta.get('train_ticker', '?')} | Threshold מומלץ: **{meta.get('recommended_threshold', 'לא חושב')}**")
-            
     st.markdown("---")
     st.markdown("### 🧪 שכבת Ground Truth מחקרית קיימת")
     if st.session_state.research_archive:
@@ -1005,12 +977,12 @@ def screen_ml_trainer():
 # ניתוב
 # ============================================================
 routes = {
-    "wyckoff": screen_wyckoff, 
-    "vp": screen_vp, 
+    "wyckoff": screen_wyckoff,
+    "vp": screen_vp,
     "vwap": screen_vwap,
-    "composite": screen_composite, 
+    "composite": screen_composite,
     "backtest": screen_backtest,
-    "ml": screen_ml_trainer, 
+    "ml": screen_ml_trainer,
     "scanner": screen_scanner
 }
 routes[st.session_state.mode]()
