@@ -3,17 +3,64 @@
 # ============================================================
 import sys
 import os
+import pickle
+import time
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import streamlit as st
+import plotly.graph_objects as go
+
 # מוסיף את התיקייה הנוכחית ל-Path של Python כדי לוודא ש-scout_core יימצא
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-import streamlit as st
-import plotly.graph_objects as go
-from scout_core import *
+from scout_core import *  # כל הלוגיקה החישובית
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
 # ============================================================
-# רשימת המניות (לשימוש בסורק הממשק)
+# פונקציות עזר שנשארות בקובץ הראשי (שמירה / טעינה)
+# ============================================================
+def save_model_to_disk(slot_name, model, metadata, encoder):
+    os.makedirs("models", exist_ok=True)
+    safe_name = clean_filename(slot_name)
+    file_path = f"models/model_{safe_name}.pkl"
+    save_data = {"model": model, "metadata": metadata, "phase_encoder": encoder}
+    with open(file_path, "wb") as f:
+        pickle.dump(save_data, f)
+    return file_path
+
+def load_all_models_from_disk():
+    loaded_archive = {}
+    if os.path.exists("models"):
+        for filename in os.listdir("models"):
+            if filename.endswith(".pkl"):
+                filepath = os.path.join("models", filename)
+                try:
+                    with open(filepath, "rb") as f:
+                        data = pickle.load(f)
+                    slot = data.get("metadata", {}).get("slot", filename)
+                    loaded_archive[slot] = data
+                except:
+                    pass
+    return loaded_archive
+
+def load_all_research_dfs_from_disk():
+    archive = {}
+    if os.path.exists("research_labels"):
+        for filename in os.listdir("research_labels"):
+            if filename.endswith(".csv"):
+                filepath = os.path.join("research_labels", filename)
+                try:
+                    df = pd.read_csv(filepath)
+                    key = filename.replace("research_", "").replace(".csv", "")
+                    archive[key] = df
+                except:
+                    pass
+    return archive
+
+# ============================================================
+# Universe - רשימות המניות
 # ============================================================
 SCAN_UNIVERSE = list(dict.fromkeys([
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","JPM","JNJ",
@@ -59,6 +106,13 @@ SECTOR_MAP = {
         "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
         "GLD", "SLV"
     ]
+}
+
+# Universe של האימון האוטומטי
+TRAINING_UNIVERSE = {
+    "Growth (צמיחה)": SECTOR_MAP["צמיחה וטכנולוגיה (Growth)"],
+    "Value/Index (ערך/מדד)": SECTOR_MAP["ערך ומדד (Value/Index)"],
+    "Commodities (סחורות)": SECTOR_MAP["סחורות ואנרגיה (Commodities)"]
 }
 
 # ============================================================
@@ -296,7 +350,7 @@ def screen_vwap(): st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEV
 def screen_composite(): st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2></div>""", unsafe_allow_html=True)
 
 # ============================================================
-# מסך חדש: UNDER THE HOOD (דשבורד מעבדה)
+# מסך Monitor - צפייה בליבת האימון
 # ============================================================
 def screen_monitor():
     st.markdown("""<div class="header-box monitor"><h2>👁️ UNDER THE HOOD - Lab Monitor</h2>
@@ -318,12 +372,11 @@ def screen_monitor():
     model = model_data['model']
     meta = model_data['metadata']
 
-    # Load CSV Data (History of Auto-Trainer)
+    # Load CSV Data
     df = pd.DataFrame()
     if os.path.exists(csv_path):
         df = pd.read_csv(csv_path)
 
-    # Top level metrics
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("דיוק (OOB Score)", f"{meta.get('train_acc', 0)*100:.1f}%")
     c2.metric("סה\"כ עסקאות בבסיס הנתונים", len(df) if not df.empty else 0)
@@ -343,9 +396,7 @@ def screen_monitor():
         if hasattr(model, 'feature_importances_') and hasattr(model, 'feature_names_in_'):
             importances = model.feature_importances_
             features = model.feature_names_in_
-            fi_df = pd.DataFrame({'Feature': features, 'Importance': importances}).sort_values('Importance', ascending=True)
-            # מציג את 10 הפקטורים החשובים ביותר כדי לשמור על גרף נקי
-            fi_df = fi_df.tail(10)
+            fi_df = pd.DataFrame({'Feature': features, 'Importance': importances}).sort_values('Importance', ascending=True).tail(10)
             
             fig = go.Figure(go.Bar(
                 x=fi_df['Importance'], 
@@ -376,16 +427,17 @@ def screen_monitor():
     st.markdown("---")
     st.markdown("### 🕒 עסקאות אחרונות שנסרקו על ידי ה-Auto-Trainer")
     if not df.empty:
-        # סידור לפי תאריך יורד כדי לראות מה נכנס אחרון
         show_df = df[['entry_date', 'ticker', 'phase', 'label']].sort_values('entry_date', ascending=False).head(15)
-        # המרה טקסטואלית יפה של הסטטוס
         show_df['label'] = show_df['label'].apply(lambda x: '✅ הצלחה' if x == 1 else '❌ כישלון')
         show_df.rename(columns={'entry_date': 'תאריך כניסה', 'ticker': 'מניה', 'phase': 'פאזת Wyckoff', 'label': 'סטטוס קצה'}, inplace=True)
         st.dataframe(show_df, use_container_width=True)
 
+# ============================================================
+# מסך ML Trainer – עם כפתור אימון אוטומטי מלא
+# ============================================================
 def screen_ml_trainer():
     st.markdown("""<div class="header-box ml"><h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
-    <p>מסך זה מאפשר אימון ידני בודד לבדיקות, אך מומלץ להשתמש ב-auto_trainer.py לאיסוף צובר של הסקטור המלא ברקע.</p></div>""", unsafe_allow_html=True)
+    <p>מסך זה מאפשר אימון ידני בודד לבדיקות, אך מומלץ להשתמש באימון האוטומטי המלא למטה.</p></div>""", unsafe_allow_html=True)
     
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
     c1, c2, c3 = st.columns(3)
@@ -445,7 +497,8 @@ def screen_ml_trainer():
                 hist_df = pd.read_csv(history_path)
                 combined_df = pd.concat([hist_df, new_df], ignore_index=True)
                 combined_df = combined_df.drop_duplicates(subset=['ticker', 'entry_date'], keep='last')
-            else: combined_df = new_df
+            else:
+                combined_df = new_df
                 
             combined_df.to_csv(history_path, index=False)
             
@@ -486,6 +539,141 @@ def screen_ml_trainer():
             c_res1.metric("דיוק OOB (אמיתי)", f"{train_acc*100:.1f}%")
             c_res2.metric("סה\"כ עסקאות בספריית הסקטור", len(combined_df))
             c_res3.metric("🎯 Threshold מומלץ (AI)", optimal_th)
+
+    # ---------- אימון אוטומטי מלא ----------
+    st.markdown("---")
+    st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
+    st.markdown("""
+    לחץ על הכפתור כדי לסרוק את כל היקום, לאסוף עסקאות, ולאמן מחדש את כל שלושת המודלים.
+    התהליך עשוי להימשך מספר דקות.
+    """)
+
+    if st.button("🚀 הזנק אימון אוטומטי מלא", type="primary"):
+        log_container = st.empty()
+        progress_bar = st.progress(0)
+        
+        # מגדיר טווח תאריכים: 6 שנים למצב full (או 90 ימים לרבעוני – נשתמש ב-full בתוך ה-UI)
+        end_date_dt = datetime.today()
+        start_date_dt = end_date_dt - timedelta(days=6*365)
+        start_date = start_date_dt.strftime('%Y-%m-%d')
+        end_date = end_date_dt.strftime('%Y-%m-%d')
+        
+        results_summary = {}
+        base_threshold = 50
+        total_sectors = len(TRAINING_UNIVERSE)
+        sector_idx = 0
+
+        with st.spinner("מאמן את כל הסקטורים... נא להמתין"):
+            for slot, tickers in TRAINING_UNIVERSE.items():
+                sector_idx += 1
+                log_container.info(f"מעבד סקטור: {slot} ({len(tickers)} מניות)")
+                safe_slot_name = clean_filename(slot)
+                history_path = f"models/training_data_{safe_slot_name}.csv"
+                os.makedirs("models", exist_ok=True)
+                
+                features_list = []
+                errors = 0
+                added_trades = 0
+                
+                for i, ticker in enumerate(tickers):
+                    time.sleep(0.3)   # rate limiting
+                    try:
+                        bt_df, audit_df = run_wyckoff_anchored_backtest(
+                            ticker, use_ai=False, threshold=base_threshold,
+                            period=None, start=start_date, end=end_date,
+                            risk_profile="Aggressive"
+                        )
+                        if audit_df is None or audit_df.empty:
+                            continue
+                            
+                        engine = FactorEngine(BacktestConfig())
+                        df = bt_df.copy()
+                        for _, trade in audit_df.iterrows():
+                            entry_dt = pd.Timestamp(trade['entry_date'])
+                            if entry_dt in df.index:
+                                window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
+                                factors = engine.compute(window_df)
+                                if len(factors) > 0:
+                                    feature_row = factors.iloc[-1].to_dict()
+                                    feature_row['phase'] = df.loc[entry_dt]['wyckoff_phase']
+                                    feature_row['label'] = 1 if trade['win'] else 0
+                                    feature_row['ticker'] = ticker
+                                    feature_row['entry_date'] = trade['entry_date']
+                                    features_list.append(feature_row)
+                                    added_trades += 1
+                    except Exception as e:
+                        errors += 1
+                        continue
+                    
+                # מיזוג עם CSV קיים
+                new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
+                if os.path.exists(history_path):
+                    hist_df = pd.read_csv(history_path)
+                    combined_df = pd.concat([hist_df, new_df], ignore_index=True).drop_duplicates(subset=['ticker', 'entry_date'], keep='last')
+                else:
+                    combined_df = new_df
+                    
+                if combined_df.empty:
+                    log_container.warning(f"אין עסקאות לסקטור {slot}. מדלג...")
+                    continue
+                    
+                combined_df.to_csv(history_path, index=False)
+                log_container.write(f"{slot}: {added_trades} עסקאות חדשות נוספו | סה\"כ ספרייה: {len(combined_df)} | שגיאות: {errors}")
+                
+                # אימון מודל
+                y = combined_df['label'].values
+                le = LabelEncoder()
+                phase_encoded = le.fit_transform(combined_df['phase'].fillna("לא בתהליך איסוף"))
+                phase_dummies = pd.get_dummies(phase_encoded, prefix='phase').astype(int)
+                drop_cols = ['phase', 'label', 'ticker', 'entry_date']
+                tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns]).select_dtypes(include=[np.number])
+                X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).fillna(0)
+                
+                model = RandomForestClassifier(n_estimators=100, max_depth=3, min_samples_leaf=3, oob_score=True, random_state=42, n_jobs=-1)
+                model.fit(X, y)
+                try:
+                    train_acc = model.oob_score_
+                except:
+                    train_acc = model.score(X, y)
+                    
+                optimal_th = calculate_optimal_threshold(model, X, y)
+                meta = {
+                    "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
+                    "train_acc": train_acc,
+                    "test_acc": train_acc,
+                    "slot": slot,
+                    "model_type": "Wyckoff-Anchored",
+                    "num_trades": len(combined_df),
+                    "recommended_threshold": optimal_th
+                }
+                save_model_to_disk(slot, model, meta, le)
+                results_summary[slot] = {"tickers": len(tickers), "oob": train_acc*100, "th": optimal_th}
+                
+                # עדכון סרגל התקדמות
+                progress_bar.progress(sector_idx / total_sectors)
+                time.sleep(1)   # הפסקה קטנה בין סקטורים
+
+        # סיום
+        log_container.success("האימון האוטומטי הסתיים בהצלחה!")
+        progress_bar.progress(1.0)
+        
+        # רענון ארכיון המודלים
+        st.session_state.model_archive = load_all_models_from_disk()
+        
+        # טבלת סיכום
+        st.markdown("### 📊 סיכום תוצאות האימון")
+        summary_rows = []
+        for slot, data in results_summary.items():
+            summary_rows.append({
+                "סקטור": slot.split()[0],
+                "מניות": data['tickers'],
+                "דיוק OOB (%)": f"{data['oob']:.1f}",
+                "Threshold מומלץ": data['th']
+            })
+        if summary_rows:
+            st.table(pd.DataFrame(summary_rows))
+        else:
+            st.warning("לא נמצאו תוצאות.")
 
 routes = {
     "wyckoff": screen_wyckoff, "vp": screen_vp, "vwap": screen_vwap,
