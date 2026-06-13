@@ -483,18 +483,18 @@ def screen_monitor():
         else:
             st.info("אין מספיק נתונים להצגת התפלגות מניות.")
 
-    # -------------------------- NEW: VIX Distribution --------------------------
+    # -------------------------- VIX Distribution (FIXED) --------------------------
     st.markdown("---")
     st.markdown("### 📈 התפלגות VIX ברגעי עסקאות לעומת ממוצע היסטורי")
     
     if not df.empty:
-        # Check for VIX_ZScore or VIX_Close in the columns
         vix_col = None
-        if 'VIX_ZScore' in df.columns:
-            vix_col = 'VIX_ZScore'
+        label = ""
+        if 'f_macro_vix_zscore' in df.columns:
+            vix_col = 'f_macro_vix_zscore'
             label = 'VIX Z-Score (סטיית תקן מהממוצע)'
-        elif 'VIX_Close' in df.columns:
-            vix_col = 'VIX_Close'
+        elif 'vix_close' in df.columns:
+            vix_col = 'vix_close'
             label = 'VIX Close (ערך נקוב)'
         
         if vix_col:
@@ -529,7 +529,7 @@ def screen_monitor():
             st.plotly_chart(fig_vix, use_container_width=True)
             st.caption("🔍 *גרף זה מציג באיזו סביבת VIX המערכת נכנסה לעסקאות. VIX Z-Score חיובי = VIX גבוה מהממוצע ההיסטורי (פחד).*")
         else:
-            st.info("לא נמצאו נתוני VIX (VIX_Close או VIX_ZScore) בקובץ האימון. ודא שה-Auto-Trainer החדש רץ עם הורדת נתוני מאקרו.")
+            st.info("לא נמצאו נתוני VIX (f_macro_vix_zscore / vix_close) בקובץ האימון. ודא שה‑Auto‑Trainer רץ עם הורדת נתוני מאקרו.")
     else:
         st.info("אין נתוני אימון זמינים להצגת התפלגות VIX.")
     # --------------------------------------------------------------------------
