@@ -35,13 +35,53 @@ from scout_core import (
 )
 
 # ============================================================
-# טעינה קשיחה של trainer_core.py
+# טעינה קשיחה של trainer_core.py עם חיפוש במספר נתיבים
 # ============================================================
-def _load_run_auto_trainer():
-    trainer_file = os.path.join(BASE_DIR, "trainer_core.py")
+def _find_trainer_core_path():
+    env_path = os.environ.get("TRAINER_CORE_PATH")
+    candidates = []
 
-    if not os.path.exists(trainer_file):
-        return None, False, f"קובץ trainer_core.py לא נמצא בנתיב: {trainer_file}"
+    if env_path:
+        candidates.append(env_path)
+
+    candidates.extend([
+        os.path.join(BASE_DIR, "trainer_core.py"),
+        os.path.join(os.getcwd(), "trainer_core.py"),
+        os.path.join(BASE_DIR, "main", "trainer_core.py"),
+        os.path.join(os.path.dirname(BASE_DIR), "trainer_core.py"),
+        os.path.join(os.path.dirname(os.getcwd()), "trainer_core.py"),
+    ])
+
+    seen = set()
+    for p in candidates:
+        if not p:
+            continue
+        p = os.path.abspath(p)
+        if p in seen:
+            continue
+        seen.add(p)
+        if os.path.exists(p):
+            return p
+
+    for root in [BASE_DIR, os.getcwd(), os.path.dirname(BASE_DIR)]:
+        try:
+            for current_root, _, files in os.walk(root):
+                if "trainer_core.py" in files:
+                    return os.path.join(current_root, "trainer_core.py")
+        except Exception:
+            pass
+
+    return None
+
+
+def _load_run_auto_trainer():
+    trainer_file = _find_trainer_core_path()
+
+    if not trainer_file:
+        return None, False, (
+            "קובץ trainer_core.py לא נמצא באף אחד מהנתיבים שנבדקו. "
+            "הקובץ חייב להיות בתוך הריפו או בנתיב שמוגדר ב-TRAINER_CORE_PATH."
+        )
 
     try:
         spec = importlib.util.spec_from_file_location("trainer_core", trainer_file)
@@ -53,15 +93,19 @@ def _load_run_auto_trainer():
         spec.loader.exec_module(module)
 
         if not hasattr(module, "run_auto_trainer"):
-            return None, False, "הקובץ trainer_core.py נטען, אבל הפונקציה run_auto_trainer לא נמצאה בו."
+            return None, False, (
+                f"הקובץ trainer_core.py נטען מהנתיב {trainer_file}, "
+                "אבל הפונקציה run_auto_trainer לא נמצאה בו."
+            )
 
         return module.run_auto_trainer, True, ""
 
     except Exception as e:
         return None, False, (
-            f"שגיאה בטעינת trainer_core.py: {str(e)}\n"
+            f"שגיאה בטעינת trainer_core.py מהנתיב {trainer_file}: {str(e)}\n"
             f"{traceback.format_exc()}"
         )
+
 
 run_auto_trainer, TRAINER_AVAILABLE, TRAINER_ERROR = _load_run_auto_trainer()
 
@@ -233,13 +277,13 @@ def get_cached_data(ticker, period="1y", start=None, end=None):
 # ============================================================
 # Session State
 # ============================================================
-if "mode"              not in st.session_state: st.session_state.mode             = "wyckoff"
-if "ml_model"          not in st.session_state: st.session_state.ml_model         = None
-if "ml_metadata"       not in st.session_state: st.session_state.ml_metadata      = None
-if "use_ml"            not in st.session_state: st.session_state.use_ml           = False
-if "phase_encoder"     not in st.session_state: st.session_state.phase_encoder     = None
-if "model_archive"     not in st.session_state: st.session_state.model_archive    = load_all_models_from_disk()
-if "research_archive"  not in st.session_state: st.session_state.research_archive = load_all_research_dfs_from_disk()
+if "mode"             not in st.session_state: st.session_state.mode             = "wyckoff"
+if "ml_model"         not in st.session_state: st.session_state.ml_model         = None
+if "ml_metadata"      not in st.session_state: st.session_state.ml_metadata      = None
+if "use_ml"           not in st.session_state: st.session_state.use_ml           = False
+if "phase_encoder"    not in st.session_state: st.session_state.phase_encoder    = None
+if "model_archive"    not in st.session_state: st.session_state.model_archive    = load_all_models_from_disk()
+if "research_archive" not in st.session_state: st.session_state.research_archive = load_all_research_dfs_from_disk()
 
 # ============================================================
 # UI helpers
@@ -250,23 +294,11 @@ def render_threshold_control(label, key):
     st.markdown(f"**{label}**")
     col1, col2 = st.columns([4, 1])
     with col1:
-        st.session_state[key] = st.slider(
-            "",
-            40,
-            95,
-            st.session_state[key],
-            key=f"{key}_slider",
-            label_visibility="collapsed",
-        )
+        st.session_state[key] = st.slider("", 40, 95, st.session_state[key],
+                                           key=f"{key}_slider", label_visibility="collapsed")
     with col2:
-        st.number_input(
-            "",
-            40,
-            95,
-            st.session_state[key],
-            key=f"{key}_num",
-            label_visibility="collapsed",
-        )
+        st.number_input("", 40, 95, st.session_state[key],
+                        key=f"{key}_num", label_visibility="collapsed")
     return st.session_state[key]
 
 
@@ -277,20 +309,14 @@ def render_active_ai_selector_widget(screen_identifier):
     with col_a:
         if st.session_state.model_archive:
             slots_list    = list(st.session_state.model_archive.keys())
-            selected_slot = st.selectbox(
-                "בחר מודל מוסדי פעיל:",
-                slots_list,
-                key=f"selector_slot_{screen_identifier}",
-            )
-            if st.button(
-                "✅ טען והפעל מודל",
-                key=f"activate_btn_{screen_identifier}",
-                use_container_width=True,
-            ):
+            selected_slot = st.selectbox("בחר מודל מוסדי פעיל:", slots_list,
+                                         key=f"selector_slot_{screen_identifier}")
+            if st.button("✅ טען והפעל מודל", key=f"activate_btn_{screen_identifier}",
+                         use_container_width=True):
                 target_data = st.session_state.model_archive[selected_slot]
                 st.session_state.ml_model      = target_data["model"]
                 st.session_state.ml_metadata   = target_data["metadata"]
-                st.session_state.phase_encoder  = target_data.get("phase_encoder")
+                st.session_state.phase_encoder = target_data.get("phase_encoder")
                 st.session_state.use_ml        = True
                 st.success(f"המודל '{selected_slot}' הופעל בהצלחה!")
                 st.rerun()
@@ -298,20 +324,14 @@ def render_active_ai_selector_widget(screen_identifier):
             st.info("לא נמצאו מודלים בזיכרון. הרץ אימון ידני או אוטומטי.")
     with col_b:
         st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
-        if st.button(
-            "🔄 רענן מודלים מהדיסק",
-            key=f"sync_git_{screen_identifier}",
-            use_container_width=True,
-        ):
+        if st.button("🔄 רענן מודלים מהדיסק", key=f"sync_git_{screen_identifier}",
+                     use_container_width=True):
             st.session_state.model_archive = load_all_models_from_disk()
             st.rerun()
     with col_c:
         st.markdown("<div style='margin-top:32px;'></div>", unsafe_allow_html=True)
-        ai_toggle = st.checkbox(
-            "הפעל שימוש ב-AI",
-            value=st.session_state.use_ml,
-            key=f"checkbox_ai_{screen_identifier}",
-        )
+        ai_toggle = st.checkbox("הפעל שימוש ב-AI", value=st.session_state.use_ml,
+                                key=f"checkbox_ai_{screen_identifier}")
         if ai_toggle != st.session_state.use_ml:
             st.session_state.use_ml = ai_toggle
             st.rerun()
@@ -321,25 +341,17 @@ def render_active_ai_selector_widget(screen_identifier):
 # ניווט
 # ============================================================
 st.markdown("# INSTITUTIONAL SCOUT PRO")
-c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+c1,c2,c3,c4,c5,c6,c7,c8 = st.columns(8)
 nav = [
-    ("wyckoff", "⬛ Wyckoff"),
-    ("vp", "🔮 VP"),
-    ("vwap", "📊 VWAP"),
-    ("composite", "📈 Composite"),
-    ("backtest", "📊 Backtest"),
-    ("ml", "🧠 ML Trainer"),
-    ("scanner", "🔎 Scanner"),
-    ("monitor", "👁️ Monitor"),
+    ("wyckoff","⬛ Wyckoff"), ("vp","🔮 VP"), ("vwap","📊 VWAP"),
+    ("composite","📈 Composite"), ("backtest","📊 Backtest"),
+    ("ml","🧠 ML Trainer"), ("scanner","🔎 Scanner"), ("monitor","👁️ Monitor"),
 ]
-for col, (mode_key, label) in zip([c1, c2, c3, c4, c5, c6, c7, c8], nav):
+for col, (mode_key, label) in zip([c1,c2,c3,c4,c5,c6,c7,c8], nav):
     with col:
-        if st.button(
-            label,
-            use_container_width=True,
-            type="primary" if st.session_state.mode == mode_key else "secondary",
-            key=f"nav_{mode_key}",
-        ):
+        if st.button(label, use_container_width=True,
+                     type="primary" if st.session_state.mode == mode_key else "secondary",
+                     key=f"nav_{mode_key}"):
             st.session_state.mode = mode_key
             st.rerun()
 st.markdown("---")
@@ -350,7 +362,7 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
     rec_th   = metadata.get("recommended_threshold", "לא חושב")
     tr_count = metadata.get("num_trades", "?")
     st.info(
-        f"🧠 **מצב AI מופעל:** {metadata.get('slot', 'כללי')} | "
+        f"🧠 **מצב AI מופעל:** {metadata.get('slot','כללי')} | "
         f"דיוק OOB אמיתי: {acc*100:.1f}% | "
         f"🎯 **ציון סף מומלץ לכניסה:** {rec_th} | "
         f"מאומן על {tr_count} עסקאות היסטוריות"
@@ -360,10 +372,8 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
 # מסכים
 # ============================================================
 def screen_wyckoff():
-    st.markdown(
-        """<div class="header-box wyckoff"><h2>⬛ WYCKOFF 3.0 STRUCTURAL ENGINE</h2></div>""",
-        unsafe_allow_html=True,
-    )
+    st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF 3.0 STRUCTURAL ENGINE</h2></div>""",
+                unsafe_allow_html=True)
     render_active_ai_selector_widget("wyckoff_screen")
     c1, c2 = st.columns([4, 1])
     with c1:
@@ -371,7 +381,6 @@ def screen_wyckoff():
     with c2:
         st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
         btn = st.button("▶ הרץ ניתוח", use_container_width=True, type="primary")
-
     if btn:
         with st.spinner("מנתח דרך FactorEngine..."):
             df = get_cached_data(ticker.upper())
@@ -397,34 +406,24 @@ def screen_wyckoff():
 
 
 def screen_backtest():
-    st.markdown(
-        """<div class="header-box composite"><h2>📊 WYCKOFF-ANCHORED BACKTEST ENGINE</h2></div>""",
-        unsafe_allow_html=True,
-    )
+    st.markdown("""<div class="header-box composite"><h2>📊 WYCKOFF-ANCHORED BACKTEST ENGINE</h2></div>""",
+                unsafe_allow_html=True)
     render_active_ai_selector_widget("bt_screen")
     col_r1, _ = st.columns([1, 2])
     with col_r1:
-        risk_profile = st.selectbox(
-            "🎯 Risk Profile:",
-            ["Aggressive", "Balanced", "Conservative"],
-            index=1,
-        )
+        risk_profile = st.selectbox("🎯 Risk Profile:", ["Aggressive", "Balanced", "Conservative"], index=1)
     c1, c2, _ = st.columns([2, 1.5, 1])
     with c1:
         ticker = st.text_input("סמל לבדיקה:", "COST", key="bt_t")
     with c2:
         render_threshold_control("סף ציון CIS", "bt_threshold")
         bt_threshold = st.session_state["bt_threshold"]
-
     if st.button("▶ הרץ סימולציה", use_container_width=True, type="primary"):
         with st.spinner("מריץ..."):
             try:
                 bt_df, audit_df = run_wyckoff_anchored_backtest(
-                    ticker.upper(),
-                    st.session_state.use_ml,
-                    bt_threshold,
-                    period="2y",
-                    risk_profile=risk_profile,
+                    ticker.upper(), st.session_state.use_ml, bt_threshold,
+                    period="2y", risk_profile=risk_profile,
                 )
             except Exception as e:
                 st.error(f"שגיאה בהרצת הבק-טסט: {e}")
@@ -432,49 +431,30 @@ def screen_backtest():
             if bt_df is None:
                 st.error("שגיאה בנתונים.")
                 return
-
             t_count = len(audit_df)
-            w_rate  = len(audit_df[audit_df["win"] == True]) / t_count if t_count > 0 else 0
-            s_ret   = bt_df["Cum_Strategy"].iloc[-1]
-
+            w_rate  = len(audit_df[audit_df['win'] == True]) / t_count if t_count > 0 else 0
+            s_ret   = bt_df['Cum_Strategy'].iloc[-1]
             c_m1, c_m2, c_m3 = st.columns(3)
             c_m1.metric("מס' עסקאות", t_count)
             c_m2.metric("Win Rate", f"{w_rate:.1%}" if t_count > 0 else "N/A")
             c_m3.metric("תשואה", f"{s_ret:.2%}")
-
             fig = go.Figure()
-            fig.add_trace(
-                go.Scatter(
-                    x=bt_df.index,
-                    y=bt_df["Cum_Strategy"],
-                    name="Wyckoff Strategy",
-                    line=dict(color="#00ff00"),
-                )
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=bt_df.index,
-                    y=bt_df["Cum_Baseline"],
-                    name="Baseline",
-                    line=dict(color="#888888", dash="dot"),
-                )
-            )
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'],
+                                     name='Wyckoff Strategy', line=dict(color='#00ff00')))
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'],
+                                     name='Baseline', line=dict(color='#888888', dash='dot')))
             st.plotly_chart(fig, use_container_width=True)
-
             if not audit_df.empty:
                 st.markdown("### 📋 Audit Logs")
                 for _, row in audit_df.iterrows():
-                    cls   = "win" if row["win"] else "loss"
-                    emoji = "✅" if row["win"] else "❌"
+                    cls   = "win" if row['win'] else "loss"
+                    emoji = "✅" if row['win'] else "❌"
                     st.markdown(
                         f"""<div class="audit-row {cls}"><b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>
                         פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type','N/A')}</div>""",
                         unsafe_allow_html=True,
                     )
 
-    # ============================================================
-    # ריבוט אלים (מוחק גם את קבצי הסטטוס התקועים)
-    # ============================================================
     st.markdown("---")
     st.markdown("### ⚙️ פעולות מערכת וניקוי תקלות")
     st.markdown("במידה והלמידה נתקעת או שהאפליקציה מתנהגת מוזר - הלחצן הזה ימחק קבצים זמניים, ינקה מטמון וירענן את העמוד מאפס.")
@@ -497,10 +477,8 @@ def screen_backtest():
 
 
 def screen_scanner():
-    st.markdown(
-        """<div class="header-box scanner"><h2>🔎 MARKET SCANNER</h2></div>""",
-        unsafe_allow_html=True,
-    )
+    st.markdown("""<div class="header-box scanner"><h2>🔎 MARKET SCANNER</h2></div>""",
+                unsafe_allow_html=True)
     render_active_ai_selector_widget("scan_screen")
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -508,16 +486,10 @@ def screen_scanner():
             st.selectbox("📀 בחר סקטור:", list(SECTOR_MAP.keys()), key="scanner_sector")
         ]
     with c2:
-        scan_limit = st.slider(
-            "כמות מניות:",
-            5,
-            len(chosen_universe),
-            min(10, len(chosen_universe)),
-            step=5,
-        )
+        scan_limit = st.slider("כמות מניות:", 5, len(chosen_universe),
+                               min(10, len(chosen_universe)), step=5)
     render_threshold_control("סף כניסה (Threshold) לסינון התוצאות:", "scan_threshold")
     scan_th = st.session_state["scan_threshold"]
-
     if st.button("🚀 התחל סריקה", use_container_width=True, type="primary"):
         results  = []
         engine   = FactorEngine(BacktestConfig())
@@ -534,33 +506,31 @@ def screen_scanner():
                 except Exception:
                     pass
             progress.progress((i + 1) / scan_limit)
-
         if results:
             st.success(f"נמצאו {len(results)} מניות שעוברות את רף הציון {scan_th}:")
-            st.dataframe(pd.DataFrame(results).sort_values("Score", ascending=False), use_container_width=True)
+            st.dataframe(pd.DataFrame(results).sort_values("Score", ascending=False),
+                         use_container_width=True)
         else:
             st.warning(f"אף מניה לא חצתה את רף הציון של {scan_th}.")
 
 
 def screen_vp():
-    st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2></div>""", unsafe_allow_html=True)
-
+    st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2></div>""",
+                unsafe_allow_html=True)
 
 def screen_vwap():
-    st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2></div>""", unsafe_allow_html=True)
-
+    st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2></div>""",
+                unsafe_allow_html=True)
 
 def screen_composite():
-    st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2></div>""",
+                unsafe_allow_html=True)
 
 
 def screen_monitor():
-    st.markdown(
-        """<div class="header-box monitor"><h2>👁️ UNDER THE HOOD - Lab Monitor</h2>
+    st.markdown("""<div class="header-box monitor"><h2>👁️ UNDER THE HOOD - Lab Monitor</h2>
     <p>פיקוח בזמן אמת על מה שהמכונה לומדת, הנתונים שהיא צוברת והפקטורים שמניעים אותה.</p>
-    </div>""",
-        unsafe_allow_html=True,
-    )
+    </div>""", unsafe_allow_html=True)
 
     if not st.session_state.model_archive:
         st.warning("אין עדיין מודלים בספרייה. הרץ אימון ידני או אוטומטי קודם.")
@@ -574,8 +544,8 @@ def screen_monitor():
     csv_path  = f"models/training_data_{safe_slot}.csv"
 
     model_data = st.session_state.model_archive[slot]
-    model      = model_data["model"]
-    meta       = model_data["metadata"]
+    model      = model_data['model']
+    meta       = model_data['metadata']
 
     df = pd.DataFrame()
     if os.path.exists(csv_path):
@@ -587,8 +557,8 @@ def screen_monitor():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("דיוק (OOB Score)",            f"{meta.get('train_acc', 0)*100:.1f}%")
     c2.metric("סה\"כ עסקאות בבסיס הנתונים", len(df) if not df.empty else 0)
-    c3.metric("Threshold מומלץ לכניסה",      meta.get("recommended_threshold", 50))
-    if not df.empty and "label" in df.columns:
+    c3.metric("Threshold מומלץ לכניסה",      meta.get('recommended_threshold', 50))
+    if not df.empty and 'label' in df.columns:
         c4.metric("Win Rate היסטורי גולמי",  f"{df['label'].mean()*100:.1f}%")
     else:
         c4.metric("Win Rate היסטורי גולמי",  "N/A")
@@ -598,46 +568,32 @@ def screen_monitor():
 
     with col_a:
         st.markdown("### 🧬 מה המודל לומד? (Feature Importance)")
-        if hasattr(model, "feature_importances_") and hasattr(model, "feature_names_in_"):
+        if hasattr(model, 'feature_importances_') and hasattr(model, 'feature_names_in_'):
             fi_df = pd.DataFrame({
-                "Feature":    model.feature_names_in_,
-                "Importance": model.feature_importances_,
-            }).sort_values("Importance", ascending=True).tail(10)
-
+                'Feature':    model.feature_names_in_,
+                'Importance': model.feature_importances_,
+            }).sort_values('Importance', ascending=True).tail(10)
             fig = go.Figure(go.Bar(
-                x=fi_df["Importance"],
-                y=fi_df["Feature"],
-                orientation="h",
-                marker=dict(color="#26a69a"),
+                x=fi_df['Importance'], y=fi_df['Feature'], orientation='h',
+                marker=dict(color='#26a69a'),
             ))
-            fig.update_layout(
-                margin=dict(l=0, r=0, t=30, b=0),
-                height=350,
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-            )
+            fig.update_layout(margin=dict(l=0,r=0,t=30,b=0), height=350,
+                              paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("המודל לא מכיל מידע על חשיבות פקטורים.")
 
     with col_b:
         st.markdown("### 📊 התפלגות מניות בספרייה (Top 10)")
-        if not df.empty and "ticker" in df.columns:
-            ticker_counts = df["ticker"].value_counts().head(10)
+        if not df.empty and 'ticker' in df.columns:
+            ticker_counts = df['ticker'].value_counts().head(10)
             fig2 = go.Figure(go.Pie(
-                labels=ticker_counts.index,
-                values=ticker_counts.values,
-                hole=0.4,
-                marker=dict(colors=[
-                    "#3498db", "#9b59b6", "#34495e", "#16a085",
-                    "#27ae60", "#f1c40f", "#e67e22", "#e74c3c"
-                ]),
+                labels=ticker_counts.index, values=ticker_counts.values, hole=0.4,
+                marker=dict(colors=['#3498db','#9b59b6','#34495e','#16a085',
+                                    '#27ae60','#f1c40f','#e67e22','#e74c3c']),
             ))
-            fig2.update_layout(
-                margin=dict(l=0, r=0, t=30, b=0),
-                height=350,
-                paper_bgcolor="rgba(0,0,0,0)",
-            )
+            fig2.update_layout(margin=dict(l=0,r=0,t=30,b=0), height=350,
+                               paper_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("אין מספיק נתונים.")
@@ -645,32 +601,18 @@ def screen_monitor():
     st.markdown("---")
     st.markdown("### 📈 התפלגות VIX ברגעי עסקאות")
     if not df.empty:
-        vix_col = "f_macro_vix_zscore" if "f_macro_vix_zscore" in df.columns else \
-                  "vix_close" if "vix_close" in df.columns else None
+        vix_col = 'f_macro_vix_zscore' if 'f_macro_vix_zscore' in df.columns else \
+                  'vix_close' if 'vix_close' in df.columns else None
         if vix_col:
-            label_vix = "VIX Z-Score" if vix_col == "f_macro_vix_zscore" else "VIX Close"
+            label_vix = 'VIX Z-Score' if vix_col == 'f_macro_vix_zscore' else 'VIX Close'
             mean_vix  = df[vix_col].mean()
             fig_vix   = go.Figure()
-            fig_vix.add_trace(go.Histogram(
-                x=df[vix_col],
-                nbinsx=25,
-                name=label_vix,
-                marker_color="#7b1fa2",
-                opacity=0.75,
-            ))
-            fig_vix.add_vline(
-                x=mean_vix,
-                line_dash="dash",
-                line_color="#ef5350",
-                annotation_text=f"ממוצע: {mean_vix:.2f}",
-                annotation_position="top right",
-            )
-            fig_vix.update_layout(
-                height=350,
-                margin=dict(l=0, r=0, t=40, b=0),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-            )
+            fig_vix.add_trace(go.Histogram(x=df[vix_col], nbinsx=25,
+                                           name=label_vix, marker_color='#7b1fa2', opacity=0.75))
+            fig_vix.add_vline(x=mean_vix, line_dash="dash", line_color="#ef5350",
+                              annotation_text=f"ממוצע: {mean_vix:.2f}", annotation_position="top right")
+            fig_vix.update_layout(height=350, margin=dict(l=0,r=0,t=40,b=0),
+                                  paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig_vix, use_container_width=True)
         else:
             st.info("לא נמצאו נתוני VIX בקובץ האימון.")
@@ -678,34 +620,25 @@ def screen_monitor():
     st.markdown("---")
     st.markdown("### 🕒 עסקאות אחרונות שנסרקו")
     if not df.empty:
-        cols_ok = [c for c in ["entry_date", "ticker", "phase", "label"] if c in df.columns]
-        show_df = df[cols_ok].sort_values("entry_date", ascending=False).head(15).copy()
-        if "label" in show_df.columns:
-            show_df["label"] = show_df["label"].apply(lambda x: "✅ הצלחה" if x == 1 else "❌ כישלון")
-        show_df.rename(
-            columns={
-                "entry_date": "תאריך כניסה",
-                "ticker": "מניה",
-                "phase": "פאזת Wyckoff",
-                "label": "סטטוס קצה",
-            },
-            inplace=True,
-        )
+        cols_ok  = [c for c in ['entry_date','ticker','phase','label'] if c in df.columns]
+        show_df  = df[cols_ok].sort_values('entry_date', ascending=False).head(15).copy()
+        if 'label' in show_df.columns:
+            show_df['label'] = show_df['label'].apply(lambda x: '✅ הצלחה' if x == 1 else '❌ כישלון')
+        show_df.rename(columns={
+            'entry_date': 'תאריך כניסה', 'ticker': 'מניה',
+            'phase': 'פאזת Wyckoff', 'label': 'סטטוס קצה',
+        }, inplace=True)
         st.dataframe(show_df, use_container_width=True)
 
 
 def screen_ml_trainer():
-    st.markdown(
-        """<div class="header-box ml">
+    st.markdown("""<div class="header-box ml">
         <h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
         <p>מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי המלא נמצא למטה.</p>
-    </div>""",
-        unsafe_allow_html=True,
-    )
+    </div>""", unsafe_allow_html=True)
 
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
 
-    # ── אימון ידני ─────────────────────────────────────────────
     st.markdown("### 🔬 אימון ידני בודד")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -854,7 +787,6 @@ def screen_ml_trainer():
             c_r2.metric("סה\"כ עסקאות בספרייה", len(combined_df))
             c_r3.metric("🎯 Threshold מומלץ", optimal_th)
 
-    # ── סטטוס Auto-Trainer ─────────────────────────────────────
     st.markdown("---")
     st.markdown("### 🚦 Auto-Trainer Status")
     status = read_auto_trainer_status()
@@ -864,7 +796,6 @@ def screen_ml_trainer():
     s3.metric("סקטור נוכחי",   status.get("current_slot", "N/A"))
     s4.metric("עודכן",         status.get("updated_at", "N/A"))
 
-    # ── אימון אוטומטי מלא ─────────────────────────────────────
     st.markdown("---")
     st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
 
@@ -872,8 +803,8 @@ def screen_ml_trainer():
         if not TRAINER_AVAILABLE:
             st.error(
                 f"❌ שגיאת מערכת: לא ניתן להריץ את האימון.\n\n"
-                f"המערכת לא מוצאת את הקובץ `trainer_core.py` או שיש בו שגיאה. "
-                f"אנא ודא שהקובץ נמצא בתיקיית הפרויקט הראשית וששמו נכתב בדיוק כך.\n\n"
+                f"המערכת לא מוצאת את הקובץ `trainer_core.py` או שיש בו שגיאה.\n"
+                f"אנא ודא שהקובץ נמצא בתיקיית הפרויקט הראשית או הגדר את המשתנה TRAINER_CORE_PATH.\n\n"
                 f"פרטי השגיאה הטכנית:\n{TRAINER_ERROR}"
             )
         else:
