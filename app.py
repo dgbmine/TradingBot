@@ -1,6 +1,6 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.12
-# Background Auto-Trainer Control + Start/Stop
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.13
+# Background Auto-Trainer Control + Smart Path Resolution
 # ============================================================
 import sys
 import os
@@ -38,10 +38,18 @@ from scout_core import (
 )
 
 # ============================================================
-# Paths / Files
+# Paths / Files & Smart Resolution
 # ============================================================
 MODEL_DIR = os.path.join(BASE_DIR, "models")
+
+# ניסיון חכם למצוא את הקובץ - עוקף בעיות נתיב בענן
 TRAINER_SCRIPT = os.path.join(BASE_DIR, "trainer_core.py")
+if not os.path.exists(TRAINER_SCRIPT):
+    fallback_path = os.path.join(os.getcwd(), "trainer_core.py")
+    if os.path.exists(fallback_path):
+        TRAINER_SCRIPT = fallback_path
+
+TRAINER_AVAILABLE = os.path.exists(TRAINER_SCRIPT)
 
 AUTO_TRAINER_STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
 AUTO_TRAINER_DONE_FLAG   = os.path.join(MODEL_DIR, "auto_trainer.done")
@@ -49,8 +57,6 @@ AUTO_TRAINER_LOG_FILE    = os.path.join(BASE_DIR, "auto_trainer_error.log")
 AUTO_TRAINER_PID_FILE    = os.path.join(MODEL_DIR, "auto_trainer.pid")
 AUTO_TRAINER_STOP_FILE   = os.path.join(MODEL_DIR, "auto_trainer.stop")
 AUTO_TRAINER_LOCK_FILE   = os.path.join(MODEL_DIR, "auto_trainer.lock")
-
-TRAINER_AVAILABLE = os.path.exists(TRAINER_SCRIPT)
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
@@ -515,7 +521,7 @@ def render_trainer_control_panel():
     st.caption(
         f"Lock: {'קיים' if lock_exists else 'לא קיים'} | "
         f"Stop request: {'קיים' if stop_exists else 'לא קיים'} | "
-        f"Trainer file: {'נמצא' if TRAINER_AVAILABLE else 'לא נמצא'}"
+        f"Trainer file: {'נמצא' if TRAINER_AVAILABLE else f'לא נמצא ({TRAINER_SCRIPT})'}"
     )
 
     b1, b2, b3 = st.columns([1.2, 1.2, 2])
