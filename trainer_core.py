@@ -1,8 +1,8 @@
-# trainer_core.py
 # ============================================================
 # AUTO TRAINER - ISOLATED PROCESS WITH LOCK MECHANISM
 # מריץ כתהליך עצמאי, לא נטען על ידי Streamlit
 # ============================================================
+
 import os
 import sys
 import json
@@ -37,13 +37,13 @@ from scout_core import (
 )
 
 # ── קבועי נתיבים ──────────────────────────────────────────
-MODEL_DIR   = os.path.join(BASE_DIR, "models")
+MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
-DONE_FLAG   = os.path.join(MODEL_DIR, "auto_trainer.done")
-LOCK_FILE   = os.path.join(MODEL_DIR, "auto_trainer.lock")
-STOP_FILE   = os.path.join(MODEL_DIR, "auto_trainer.stop")
-PID_FILE    = os.path.join(MODEL_DIR, "auto_trainer.pid")
-LOG_FILE    = os.path.join(BASE_DIR,  "auto_trainer_error.log")
+DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
+LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
+STOP_FILE = os.path.join(MODEL_DIR, "auto_trainer.stop")
+PID_FILE = os.path.join(MODEL_DIR, "auto_trainer.pid")
+LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
 
 # ── סקטורים — list of tuples, לא dict ────────────────────
 GROWTH_TICKERS = [
@@ -69,20 +69,18 @@ COMMODITIES_TICKERS = [
     "GLD","SLV",
 ]
 SECTORS_LIST = [
-    ("Growth (צמיחה)",        GROWTH_TICKERS),
+    ("Growth (צמיחה)", GROWTH_TICKERS),
     ("Value/Index (ערך/מדד)", VALUE_TICKERS),
-    ("Commodities (סחורות)",  COMMODITIES_TICKERS),
+    ("Commodities (סחורות)", COMMODITIES_TICKERS),
 ]
 
 # ── משתנה גלובלי לטיפול ב-SIGTERM ────────────────────────
 _stop_requested = False
 
-
 def _handle_sigterm(signum, frame):
     global _stop_requested
     _stop_requested = True
     log_message("SIGTERM received — will stop after current ticker.")
-
 
 # ── רישום בלוג ────────────────────────────────────────────
 def log_message(msg: str):
@@ -96,20 +94,19 @@ def log_message(msg: str):
         pass
     print(line, end="", flush=True)
 
-
 # ── כתיבת סטטוס JSON ──────────────────────────────────────
 def write_status(state, message="", progress=0, current_slot="N/A",
                  started_at=None, finished_at=None, error=None):
     os.makedirs(MODEL_DIR, exist_ok=True)
     payload = {
-        "state":        state,
-        "message":      message,
-        "progress":     int(progress),
+        "state": state,
+        "message": message,
+        "progress": int(progress),
         "current_slot": str(current_slot),
-        "updated_at":   datetime.now().isoformat(timespec="seconds"),
-        "started_at":   started_at or datetime.now().isoformat(timespec="seconds"),
-        "finished_at":  finished_at or "N/A",
-        "pid":          os.getpid(),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "started_at": started_at or datetime.now().isoformat(timespec="seconds"),
+        "finished_at": finished_at or "N/A",
+        "pid": os.getpid(),
     }
     if error:
         payload["error"] = str(error)
@@ -118,7 +115,6 @@ def write_status(state, message="", progress=0, current_slot="N/A",
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-
 
 # ── שמירת מודל ────────────────────────────────────────────
 def save_model_to_disk(slot_name, model, metadata, encoder):
@@ -129,17 +125,16 @@ def save_model_to_disk(slot_name, model, metadata, encoder):
         pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f)
     return file_path
 
-
 # ── בניית X, y ────────────────────────────────────────────
 def _build_X_y(combined_df: pd.DataFrame):
-    y  = combined_df["label"].values
+    y = combined_df["label"].values
     le = LabelEncoder()
     phase_encoded = le.fit_transform(
         combined_df["phase"].fillna("לא בתהליך איסוף")
     )
     phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
-    drop_cols     = ["phase", "label", "ticker", "entry_date"]
-    tech_factors  = (
+    drop_cols = ["phase", "label", "ticker", "entry_date"]
+    tech_factors = (
         combined_df
         .drop(columns=[c for c in drop_cols if c in combined_df.columns])
         .select_dtypes(include=[np.number])
@@ -155,23 +150,20 @@ def _build_X_y(combined_df: pd.DataFrame):
     )
     return X, y, le
 
-
 # ── אימון סקטור בודד ──────────────────────────────────────
 def train_sector(slot_str, tickers, start_date, end_date,
                  base_threshold=50, risk_profile="Aggressive"):
     global _stop_requested
     features_list = []
-    errors        = 0
-    added_trades  = 0
-    engine        = FactorEngine(BacktestConfig())
+    errors = 0
+    added_trades = 0
+    engine = FactorEngine(BacktestConfig())
 
     macro = None
     if yf is not None:
         try:
-            spy   = yf.download("SPY", start=start_date, end=end_date,
-                                 progress=False)["Close"].rename("SPY_Close")
-            vix   = yf.download("^VIX", start=start_date, end=end_date,
-                                 progress=False)["Close"].rename("VIX_Close")
+            spy = yf.download("SPY", start=start_date, end=end_date, progress=False)["Close"].rename("SPY_Close")
+            vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)["Close"].rename("VIX_Close")
             macro = pd.concat([spy, vix], axis=1).ffill().bfill()
             macro.index = pd.to_datetime(macro.index).date
         except Exception:
@@ -182,7 +174,6 @@ def train_sector(slot_str, tickers, start_date, end_date,
         if _stop_requested or os.path.exists(STOP_FILE):
             log_message(f"Stop requested — aborting sector {slot_str} after {added_trades} trades.")
             break
-
         time.sleep(0.3)
         try:
             bt_df, audit_df = run_wyckoff_anchored_backtest(
@@ -192,7 +183,6 @@ def train_sector(slot_str, tickers, start_date, end_date,
             )
             if audit_df is None or audit_df.empty:
                 continue
-
             df = bt_df.copy()
             if macro is not None and not df.empty:
                 df["date_key"] = df.index.date
@@ -213,14 +203,14 @@ def train_sector(slot_str, tickers, start_date, end_date,
                     factors = engine.compute(window_df)
                     if len(factors) == 0:
                         continue
-                    factors     = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
+                    factors = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
                     feature_row = factors.iloc[-1].to_dict()
-                    raw_phase   = df.loc[entry_dt]["wyckoff_phase"]
+                    raw_phase = df.loc[entry_dt]["wyckoff_phase"]
                     if isinstance(raw_phase, pd.Series):
                         raw_phase = raw_phase.iloc[-1]
-                    feature_row["phase"]      = raw_phase
-                    feature_row["label"]      = 1 if trade["win"] else 0
-                    feature_row["ticker"]     = ticker
+                    feature_row["phase"] = raw_phase
+                    feature_row["label"] = 1 if trade["win"] else 0
+                    feature_row["ticker"] = ticker
                     feature_row["entry_date"] = trade["entry_date"]
                     features_list.append(feature_row)
                     added_trades += 1
@@ -231,7 +221,6 @@ def train_sector(slot_str, tickers, start_date, end_date,
             continue
 
     return features_list, added_trades, errors
-
 
 # ── MAIN ──────────────────────────────────────────────────
 def run_auto_trainer():
@@ -248,7 +237,6 @@ def run_auto_trainer():
 
     log_message("=== run_auto_trainer START ===")
     log_message(f"PID: {os.getpid()} | BASE_DIR: {BASE_DIR}")
-
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     # ── מנגנון נעילה (Lock) ────────────────────────────────
@@ -268,8 +256,7 @@ def run_auto_trainer():
     # צור מנעול
     try:
         with open(LOCK_FILE, "w", encoding="utf-8") as f:
-            json.dump({"pid": os.getpid(),
-                       "started_at": datetime.now().isoformat(timespec="seconds")}, f)
+            json.dump({"pid": os.getpid(), "started_at": datetime.now().isoformat(timespec="seconds")}, f)
     except Exception as e:
         log_message(f"Cannot create lock file: {e}")
         return
@@ -289,16 +276,14 @@ def run_auto_trainer():
             except Exception:
                 pass
 
-    started_at     = datetime.now().isoformat(timespec="seconds")
-    end_date_dt    = datetime.today()
-    start_date_dt  = end_date_dt - timedelta(days=6 * 365)
-    start_date     = start_date_dt.strftime("%Y-%m-%d")
-    end_date       = end_date_dt.strftime("%Y-%m-%d")
+    started_at = datetime.now().isoformat(timespec="seconds")
+    end_date_dt = datetime.today()
+    start_date_dt = end_date_dt - timedelta(days=6 * 365)
+    start_date = start_date_dt.strftime("%Y-%m-%d")
+    end_date = end_date_dt.strftime("%Y-%m-%d")
     base_threshold = 50
-    total_sectors  = len(SECTORS_LIST)
-
-    write_status(state="running", message="האימון האוטומטי התחיל",
-                 progress=0, started_at=started_at)
+    total_sectors = len(SECTORS_LIST)
+    write_status(state="running", message="האימון האוטומטי התחיל", progress=0, started_at=started_at)
 
     try:
         for sector_idx, (slot, tickers) in enumerate(SECTORS_LIST, start=1):
@@ -309,10 +294,8 @@ def run_auto_trainer():
                              progress=int(((sector_idx - 1) / total_sectors) * 100),
                              started_at=started_at)
                 break
-
             slot_str = str(slot)
             log_message(f"--- Sector {sector_idx}/{total_sectors}: {slot_str} ---")
-
             write_status(
                 state="running",
                 message=f"מעבד סקטור: {slot_str}",
@@ -325,18 +308,18 @@ def run_auto_trainer():
                 slot_str, tickers, start_date, end_date, base_threshold,
             )
 
-            safe_name    = clean_filename(slot_str)
+            safe_name = clean_filename(slot_str)
             history_path = os.path.join(MODEL_DIR, f"training_data_{safe_name}.csv")
-
             new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
 
             if os.path.exists(history_path):
                 try:
-                    hist_df     = pd.read_csv(history_path)
+                    hist_df = pd.read_csv(history_path)
                     combined_df = (
                         pd.concat([hist_df, new_df], ignore_index=True)
                         .drop_duplicates(subset=["ticker", "entry_date"], keep="last")
-                    ) if not new_df.empty else hist_df
+                        if not new_df.empty else hist_df
+                    )
                 except Exception:
                     combined_df = new_df
             else:
@@ -359,17 +342,19 @@ def run_auto_trainer():
                 oob_score=True, random_state=42, n_jobs=-1,
             )
             model.fit(X, y)
-            try:    train_acc = model.oob_score_
-            except: train_acc = model.score(X, y)
+            try:
+                train_acc = model.oob_score_
+            except:
+                train_acc = model.score(X, y)
 
             optimal_th = calculate_optimal_threshold(model, X, y)
             meta = {
-                "train_ticker":          "AUTO_TRAINER_MASTER_LIBRARY",
-                "train_acc":             train_acc,
-                "test_acc":              train_acc,
-                "slot":                  slot_str,
-                "model_type":            "Wyckoff-Anchored",
-                "num_trades":            len(combined_df),
+                "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
+                "train_acc": train_acc,
+                "test_acc": train_acc,
+                "slot": slot_str,
+                "model_type": "Wyckoff-Anchored",
+                "num_trades": len(combined_df),
                 "recommended_threshold": optimal_th,
             }
             save_model_to_disk(slot_str, model, meta, le)
@@ -383,7 +368,6 @@ def run_auto_trainer():
                 started_at=started_at,
             )
             time.sleep(1)
-
         else:
             # הלולאה הסתיימה ללא break — הצלחה מלאה
             finished_at = datetime.now().isoformat(timespec="seconds")
@@ -400,13 +384,10 @@ def run_auto_trainer():
             except Exception:
                 pass
             log_message("=== run_auto_trainer DONE ===")
-
     except Exception as e:
         log_message(f"CRITICAL ERROR: {traceback.format_exc()}")
-        write_status(state="error", message="האימון נכשל",
-                     progress=0, error=str(e), started_at=started_at)
+        write_status(state="error", message="האימון נכשל", progress=0, error=str(e), started_at=started_at)
         raise
-
     finally:
         # ── תמיד: שחרר מנעול ו-PID ─────────────────────────
         for f in [LOCK_FILE, PID_FILE]:
@@ -421,7 +402,6 @@ def run_auto_trainer():
                 os.remove(STOP_FILE)
             except Exception:
                 pass
-
 
 # ── כניסה ישירה מ-CLI ─────────────────────────────────────
 if __name__ == "__main__":
