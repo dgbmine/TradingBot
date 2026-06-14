@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.14
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.15
 # Background Auto-Trainer Control + Aggressive Cleanup & Smart Path
 # ============================================================
 import sys
@@ -1051,4 +1051,45 @@ def screen_ml_trainer():
             save_path = save_model_to_disk(target_slot, model, meta, le)
             st.session_state.model_archive = load_all_models_from_disk()
             st.session_state.ml_model = model
-            st.
+            st.session_state.ml_metadata = meta
+            st.session_state.phase_encoder = le
+            st.session_state.use_ml = True
+            st.success(f"✅ אימון הושלם! מודל נשמר: {save_path}")
+            c_r1, c_r2, c_r3 = st.columns(3)
+            c_r1.metric("דיוק OOB", f"{train_acc*100:.1f}%")
+            c_r2.metric("סה\"כ עסקאות בספרייה", len(combined_df))
+            c_r3.metric("🎯 Threshold מומלץ", optimal_th)
+
+    st.markdown("---")
+    render_trainer_control_panel()
+
+    st.markdown("---")
+    with st.expander("📝 יומן ריצה ושגיאות", expanded=False):
+        if os.path.exists(AUTO_TRAINER_LOG_FILE):
+            try:
+                with open(AUTO_TRAINER_LOG_FILE, "r", encoding="utf-8") as f:
+                    logs = f.read()
+                st.text_area("היומן המלא:", logs[-5000:], height=300)
+                if st.button("🗑️ נקה יומן"):
+                    open(AUTO_TRAINER_LOG_FILE, "w").close()
+                    st.rerun()
+            except Exception as e:
+                st.warning(f"לא ניתן לקרוא את קובץ הלוג: {e}")
+        else:
+            st.info("קובץ היומן עדיין לא נוצר. יופיע כשהאימון יתחיל.")
+
+
+# ============================================================
+# ניתוב
+# ============================================================
+routes = {
+    "wyckoff": screen_wyckoff,
+    "vp": screen_vp,
+    "vwap": screen_vwap,
+    "composite": screen_composite,
+    "backtest": screen_backtest,
+    "ml": screen_ml_trainer,
+    "scanner": screen_scanner,
+    "monitor": screen_monitor,
+}
+routes[st.session_state.mode]()
