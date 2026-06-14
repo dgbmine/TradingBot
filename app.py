@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.9 (HARD REBOOT)
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.10 (NUCLEAR REBOOT)
 # ============================================================
 import sys
 import os
@@ -389,17 +389,29 @@ def screen_backtest():
                         unsafe_allow_html=True,
                     )
 
-    # כפתור הריבוט העוצמתי - מזריק פקודת JavaScript לדפדפן
+    # ============================================================
+    # ריבוט אלים (מוחק גם את קבצי הסטטוס התקועים)
+    # ============================================================
     st.markdown("---")
-    st.markdown("### ⚙️ אתחול כפוי למערכת")
-    if st.button("🔄 אתחול מלא (Hard Reboot & Clear Cache)", use_container_width=True):
-        # שלב 1: מנקים את הזיכרון של Streamlit
+    st.markdown("### ⚙️ פעולות מערכת וניקוי תקלות")
+    st.markdown("במידה והלמידה נתקעת או שהאפליקציה מתנהגת מוזר - הלחצן הזה ימחק קבצים זמניים, ינקה מטמון וירענן את העמוד מאפס.")
+    if st.button("🚀 נקה קבצי סטטוס תקועים ואתחל מערכת (Hard Reboot)", use_container_width=True, type="primary"):
+        # 1. מחיקת קבצים פיזיים שתוקעים את הסטטוס
+        files_to_delete = [AUTO_TRAINER_STATUS_FILE, AUTO_TRAINER_DONE_FLAG, LOG_FILE_PATH]
+        for f in files_to_delete:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except:
+                    pass # במקרה של הרשאת קובץ פתוח, פשוט נדלג
+                    
+        # 2. ניקוי המטמון של Streamlit
         st.cache_data.clear()
         if hasattr(st, "cache_resource"):
             st.cache_resource.clear()
         st.session_state.clear()
         
-        # שלב 2: מזריקים קוד לדפדפן כדי לטעון מחדש את העמוד מאפס לחלוטין
+        # 3. הזרקת קוד JavaScript לביצוע רענון מלא של הדפדפן
         js_code = "<script>window.parent.location.reload(true);</script>"
         st.components.v1.html(js_code, height=0)
 
