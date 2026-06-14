@@ -1,12 +1,14 @@
-# trainer_core.py - FULLY ISOLATED
+# trainer_core.py
+# ============================================================
+# AUTO TRAINER - ISOLATED PROCESS WITH LOCK MECHANISM
+# מריץ כתהליך עצמאי, לא נטען על ידי Streamlit
+# ============================================================
 import os
 import sys
 import json
 import time
-import gc
-import atexit
-import signal
 import pickle
+import signal
 import traceback
 from datetime import datetime, timedelta
 
@@ -20,36 +22,12 @@ try:
 except ImportError:
     yf = None
 
+# ── נתיב בסיס: תמיד לפי מיקום הקובץ הזה ──────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
-MODEL_DIR = os.path.join(BASE_DIR, "models")
-STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
-DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
-LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
-
-LOCK_STALE_AFTER_SECONDS = 6 * 60 * 60
-LOCK_WAIT_SLEEP_SECONDS = 2
-LOCK_MAX_WAIT_SECONDS = 0
-
-_LOCK_HELD = False
-_LOCK_OWNER = None
-
-
-# ============================================================
-# Logging
-# ============================================================
-def log_message(msg):
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
-
-
-# ============================================================
-# Explicit imports only
-# ============================================================
+# ── ייבוא מפורש בלבד — אין import * ──────────────────────
 from scout_core import (
     FactorEngine,
     BacktestConfig,
@@ -58,9 +36,16 @@ from scout_core import (
     clean_filename,
 )
 
-# ============================================================
-# Sectors
-# ============================================================
+# ── קבועי נתיבים ──────────────────────────────────────────
+MODEL_DIR   = os.path.join(BASE_DIR, "models")
+STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
+DONE_FLAG   = os.path.join(MODEL_DIR, "auto_trainer.done")
+LOCK_FILE   = os.path.join(MODEL_DIR, "auto_trainer.lock")
+STOP_FILE   = os.path.join(MODEL_DIR, "auto_trainer.stop")
+PID_FILE    = os.path.join(MODEL_DIR, "auto_trainer.pid")
+LOG_FILE    = os.path.join(BASE_DIR,  "auto_trainer_error.log")
+
+# ── סקטורים — list of tuples, לא dict ────────────────────
 GROWTH_TICKERS = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
     "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
@@ -68,7 +53,6 @@ GROWTH_TICKERS = [
     "UBER","ABNB","COIN","SOFI","UPST","ONTO","KLAC","LRCX",
     "AMAT","MRVL","SMCI","DELL","HPQ","RBLX","U","TTWO","EA",
 ]
-
 VALUE_TICKERS = [
     "BRK-B","JPM","JNJ","V","UNH","PG","MA","HD","MRK","ABBV",
     "PEP","KO","COST","WMT","LLY","TMO","MCD","ACN","BAC","ABT",
@@ -79,371 +63,255 @@ VALUE_TICKERS = [
     "WELL","DLR","DIS","CMCSA","DAL","UAL","AAL","LUV","FDX",
     "UPS","XPO","ODFL","DKNG","MGM","CZR","RCL","CCL","MAR","HLT",
 ]
-
 COMMODITIES_TICKERS = [
     "XOM","CVX","SLB","EOG","OXY","COP","PSX","VLO",
     "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
     "GLD","SLV",
 ]
-
 SECTORS_LIST = [
-    ("Growth (צמיחה)", GROWTH_TICKERS),
+    ("Growth (צמיחה)",        GROWTH_TICKERS),
     ("Value/Index (ערך/מדד)", VALUE_TICKERS),
-    ("Commodities (סחורות)", COMMODITIES_TICKERS),
+    ("Commodities (סחורות)",  COMMODITIES_TICKERS),
 ]
 
+# ── משתנה גלובלי לטיפול ב-SIGTERM ────────────────────────
+_stop_requested = False
 
-# ============================================================
-# Locking
-# ============================================================
-def _read_lock_payload():
-    if not os.path.exists(LOCK_FILE):
-        return None
+
+def _handle_sigterm(signum, frame):
+    global _stop_requested
+    _stop_requested = True
+    log_message("SIGTERM received — will stop after current ticker.")
+
+
+# ── רישום בלוג ────────────────────────────────────────────
+def log_message(msg: str):
+    os.makedirs(BASE_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts} - {msg}\n"
     try:
-        with open(LOCK_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
     except Exception:
-        return None
+        pass
+    print(line, end="", flush=True)
 
 
-def _is_lock_stale(lock_payload):
-    if not lock_payload:
-        return True
-
-    created_at = lock_payload.get("created_at")
-    if not created_at:
-        return True
-
-    try:
-        created_dt = datetime.fromisoformat(created_at)
-        age_seconds = (datetime.now() - created_dt).total_seconds()
-        return age_seconds > LOCK_STALE_AFTER_SECONDS
-    except Exception:
-        try:
-            mtime = os.path.getmtime(LOCK_FILE)
-            age_seconds = time.time() - mtime
-            return age_seconds > LOCK_STALE_AFTER_SECONDS
-        except Exception:
-            return True
-
-
-def acquire_lock(wait=False, timeout_seconds=LOCK_MAX_WAIT_SECONDS):
-    """
-    Atomic lock using O_EXCL file creation.
-    If lock exists and is stale, it gets replaced.
-    """
-    os.makedirs(MODEL_DIR, exist_ok=True)
-
-    start_wait = time.time()
-    owner = {
-        "pid": os.getpid(),
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "host": os.uname().nodename if hasattr(os, "uname") else "unknown",
-        "script": os.path.basename(__file__),
-    }
-
-    while True:
-        try:
-            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(owner, f, ensure_ascii=False, indent=2)
-            except Exception:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-                raise
-            return owner
-
-        except FileExistsError:
-            existing = _read_lock_payload()
-
-            if _is_lock_stale(existing):
-                try:
-                    os.remove(LOCK_FILE)
-                    continue
-                except Exception:
-                    pass
-
-            if not wait:
-                raise RuntimeError(
-                    "Auto-trainer is already running. Lock file exists and is active."
-                )
-
-            if timeout_seconds and (time.time() - start_wait) > timeout_seconds:
-                raise RuntimeError(
-                    "Timed out waiting for existing auto-trainer lock to be released."
-                )
-
-            time.sleep(LOCK_WAIT_SLEEP_SECONDS)
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to acquire trainer lock: {e}")
-
-
-def release_lock():
-    global _LOCK_HELD, _LOCK_OWNER
-    if not _LOCK_HELD:
-        return
-    try:
-        if os.path.exists(LOCK_FILE):
-            try:
-                existing = _read_lock_payload()
-                if existing is None or existing.get("pid") == os.getpid():
-                    os.remove(LOCK_FILE)
-            except Exception:
-                pass
-    finally:
-        _LOCK_HELD = False
-        _LOCK_OWNER = None
-
-
-def _signal_handler(signum, frame):
-    try:
-        release_lock()
-    finally:
-        raise SystemExit(0)
-
-
-atexit.register(release_lock)
-try:
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
-except Exception:
-    pass
-
-
-# ============================================================
-# Helpers
-# ============================================================
-def save_model_to_disk(slot_name, model, metadata, encoder):
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    safe_name = clean_filename(str(slot_name))
-    file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
-    save_data = {"model": model, "metadata": metadata, "phase_encoder": encoder}
-    with open(file_path, "wb") as f:
-        pickle.dump(save_data, f)
-    return file_path
-
-
+# ── כתיבת סטטוס JSON ──────────────────────────────────────
 def write_status(state, message="", progress=0, current_slot="N/A",
                  started_at=None, finished_at=None, error=None):
     os.makedirs(MODEL_DIR, exist_ok=True)
     payload = {
-        "state": state,
-        "message": message,
-        "progress": int(progress),
+        "state":        state,
+        "message":      message,
+        "progress":     int(progress),
         "current_slot": str(current_slot),
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "started_at": started_at or datetime.now().isoformat(timespec="seconds"),
-        "finished_at": finished_at or "N/A",
-        "lock_file": os.path.basename(LOCK_FILE),
-        "pid": os.getpid(),
+        "updated_at":   datetime.now().isoformat(timespec="seconds"),
+        "started_at":   started_at or datetime.now().isoformat(timespec="seconds"),
+        "finished_at":  finished_at or "N/A",
+        "pid":          os.getpid(),
     }
     if error:
         payload["error"] = str(error)
-    with open(STATUS_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-def _download_macro(start_date, end_date):
-    macro = None
-    if yf is None:
-        return None
-
     try:
-        spy_df = yf.download(
-            "SPY",
-            start=start_date,
-            end=end_date,
-            progress=False,
-            auto_adjust=False,
-            threads=False,
-        )
-        vix_df = yf.download(
-            "^VIX",
-            start=start_date,
-            end=end_date,
-            progress=False,
-            auto_adjust=False,
-            threads=False,
-        )
-
-        if spy_df is None or spy_df.empty or vix_df is None or vix_df.empty:
-            return None
-
-        spy = spy_df["Close"].rename("SPY_Close")
-        vix = vix_df["Close"].rename("VIX_Close")
-        macro = pd.concat([spy, vix], axis=1).ffill().bfill()
-        macro.index = pd.to_datetime(macro.index).date
-        return macro
-
-    except Exception as e:
-        log_message(f"Macro download failed: {e}")
-        return None
-
-
-def _safe_get_phase_value(df, entry_dt):
-    try:
-        raw_phase = df.loc[entry_dt]["wyckoff_phase"]
-        if isinstance(raw_phase, pd.Series):
-            raw_phase = raw_phase.iloc[-1]
-        return raw_phase
+        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception:
-        return "Unknown"
+        pass
 
 
-def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_profile="Aggressive"):
+# ── שמירת מודל ────────────────────────────────────────────
+def save_model_to_disk(slot_name, model, metadata, encoder):
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    safe_name = clean_filename(str(slot_name))
+    file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
+    with open(file_path, "wb") as f:
+        pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f)
+    return file_path
+
+
+# ── בניית X, y ────────────────────────────────────────────
+def _build_X_y(combined_df: pd.DataFrame):
+    y  = combined_df["label"].values
+    le = LabelEncoder()
+    phase_encoded = le.fit_transform(
+        combined_df["phase"].fillna("לא בתהליך איסוף")
+    )
+    phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
+    drop_cols     = ["phase", "label", "ticker", "entry_date"]
+    tech_factors  = (
+        combined_df
+        .drop(columns=[c for c in drop_cols if c in combined_df.columns])
+        .select_dtypes(include=[np.number])
+    )
+    X = (
+        pd.concat(
+            [tech_factors.reset_index(drop=True),
+             phase_dummies.reset_index(drop=True)],
+            axis=1,
+        )
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0)
+    )
+    return X, y, le
+
+
+# ── אימון סקטור בודד ──────────────────────────────────────
+def train_sector(slot_str, tickers, start_date, end_date,
+                 base_threshold=50, risk_profile="Aggressive"):
+    global _stop_requested
     features_list = []
-    errors = 0
-    added_trades = 0
-    engine = FactorEngine(BacktestConfig())
+    errors        = 0
+    added_trades  = 0
+    engine        = FactorEngine(BacktestConfig())
 
-    macro = _download_macro(start_date, end_date)
+    macro = None
+    if yf is not None:
+        try:
+            spy   = yf.download("SPY", start=start_date, end=end_date,
+                                 progress=False)["Close"].rename("SPY_Close")
+            vix   = yf.download("^VIX", start=start_date, end=end_date,
+                                 progress=False)["Close"].rename("VIX_Close")
+            macro = pd.concat([spy, vix], axis=1).ffill().bfill()
+            macro.index = pd.to_datetime(macro.index).date
+        except Exception:
+            macro = None
 
     for ticker in tickers:
-        time.sleep(0.15)
+        # ── בדיקת עצירה אחרי כל מניה ──
+        if _stop_requested or os.path.exists(STOP_FILE):
+            log_message(f"Stop requested — aborting sector {slot_str} after {added_trades} trades.")
+            break
+
+        time.sleep(0.3)
         try:
             bt_df, audit_df = run_wyckoff_anchored_backtest(
-                ticker,
-                use_ai=False,
-                threshold=base_threshold,
-                period=None,
-                start=start_date,
-                end=end_date,
+                ticker, use_ai=False, threshold=base_threshold,
+                period=None, start=start_date, end=end_date,
                 risk_profile=risk_profile,
             )
-
-            if bt_df is None or bt_df.empty or audit_df is None or audit_df.empty:
+            if audit_df is None or audit_df.empty:
                 continue
 
             df = bt_df.copy()
-
             if macro is not None and not df.empty:
                 df["date_key"] = df.index.date
                 df = df.merge(macro, left_on="date_key", right_index=True, how="left")
-                df.drop(columns=["date_key"], inplace=True)
+                df.drop(columns="date_key", inplace=True)
                 for col in ["SPY_Close", "VIX_Close"]:
                     if col in df.columns:
                         df[col] = df[col].ffill().bfill().fillna(0)
 
             for _, trade in audit_df.iterrows():
+                entry_dt = pd.Timestamp(trade["entry_date"])
+                if entry_dt not in df.index:
+                    continue
+                window_df = (df.loc[:entry_dt].iloc[-200:]
+                             if len(df.loc[:entry_dt]) > 200
+                             else df.loc[:entry_dt])
                 try:
-                    entry_dt = pd.Timestamp(trade["entry_date"])
-                    if entry_dt not in df.index:
-                        continue
-
-                    history_slice = df.loc[:entry_dt]
-                    if history_slice.empty:
-                        continue
-
-                    window_df = history_slice.iloc[-200:] if len(history_slice) > 200 else history_slice
-
                     factors = engine.compute(window_df)
-                    if factors is None or len(factors) == 0:
+                    if len(factors) == 0:
                         continue
-
-                    factors = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
+                    factors     = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
                     feature_row = factors.iloc[-1].to_dict()
-
-                    feature_row["phase"] = _safe_get_phase_value(df, entry_dt)
-                    feature_row["label"] = 1 if bool(trade.get("win", False)) else 0
-                    feature_row["ticker"] = ticker
+                    raw_phase   = df.loc[entry_dt]["wyckoff_phase"]
+                    if isinstance(raw_phase, pd.Series):
+                        raw_phase = raw_phase.iloc[-1]
+                    feature_row["phase"]      = raw_phase
+                    feature_row["label"]      = 1 if trade["win"] else 0
+                    feature_row["ticker"]     = ticker
                     feature_row["entry_date"] = trade["entry_date"]
-
                     features_list.append(feature_row)
                     added_trades += 1
-
                 except Exception:
                     continue
-
-        except Exception as e:
+        except Exception:
             errors += 1
-            log_message(f"[{slot}] ticker {ticker} failed: {e}")
             continue
 
     return features_list, added_trades, errors
 
 
-def _build_X_y(combined_df):
-    """בניית X, y, le מוכנים לאימון."""
-    y = combined_df["label"].values
-    le = LabelEncoder()
-    phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
-    phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
+# ── MAIN ──────────────────────────────────────────────────
+def run_auto_trainer():
+    global _stop_requested
+    _stop_requested = False
 
-    drop_cols = ["phase", "label", "ticker", "entry_date"]
-    tech_factors = (
-        combined_df
-        .drop(columns=[c for c in drop_cols if c in combined_df.columns])
-        .select_dtypes(include=[np.number])
-    )
+    # רישום handlers לסיגנלים
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+        if hasattr(signal, "SIGINT"):
+            signal.signal(signal.SIGINT, _handle_sigterm)
+    except Exception:
+        pass
 
-    X = pd.concat(
-        [tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)],
-        axis=1,
-    )
-    X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
-    return X, y, le
-
-
-# ============================================================
-# Main trainer
-# ============================================================
-def run_auto_trainer(wait_for_lock=False, lock_timeout_seconds=0):
-    """
-    Atomic auto-trainer:
-    - acquires a file lock
-    - writes progress after each sector
-    - releases lock on exit or crash
-    - prevents concurrent runs from Streamlit reruns
-    """
-    global _LOCK_HELD, _LOCK_OWNER
+    log_message("=== run_auto_trainer START ===")
+    log_message(f"PID: {os.getpid()} | BASE_DIR: {BASE_DIR}")
 
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    if os.path.exists(DONE_FLAG):
+    # ── מנגנון נעילה (Lock) ────────────────────────────────
+    if os.path.exists(LOCK_FILE):
+        # בדוק אם המנעול ישן (מעל 6 שעות) — אם כן, מחק אותו
         try:
-            os.remove(DONE_FLAG)
+            age = time.time() - os.path.getmtime(LOCK_FILE)
+            if age > 6 * 3600:
+                os.remove(LOCK_FILE)
+                log_message("Stale lock removed.")
+            else:
+                log_message("Lock file exists and is fresh — another instance may be running. Aborting.")
+                return
         except Exception:
             pass
 
+    # צור מנעול
     try:
-        _LOCK_OWNER = acquire_lock(wait=wait_for_lock, timeout_seconds=lock_timeout_seconds)
-        _LOCK_HELD = True
+        with open(LOCK_FILE, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(),
+                       "started_at": datetime.now().isoformat(timespec="seconds")}, f)
     except Exception as e:
-        write_status(
-            state="locked",
-            message="האימון כבר רץ במופע אחר",
-            progress=0,
-            error=str(e),
-        )
-        log_message(f"Lock acquisition failed: {e}")
-        raise
+        log_message(f"Cannot create lock file: {e}")
+        return
 
-    started_at = datetime.now().isoformat(timespec="seconds")
-    write_status(
-        state="running",
-        message="האימון האוטומטי התחיל",
-        progress=0,
-        started_at=started_at,
-        current_slot="INIT",
-    )
-    log_message("=== run_auto_trainer START ===")
-    log_message(f"Lock acquired by pid={os.getpid()} owner={_LOCK_OWNER}")
+    # כתוב PID
+    try:
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
 
-    end_date_dt = datetime.today()
-    start_date_dt = end_date_dt - timedelta(days=6 * 365)
-    start_date = start_date_dt.strftime("%Y-%m-%d")
-    end_date = end_date_dt.strftime("%Y-%m-%d")
+    # נקה דגלים ישנים
+    for f in [DONE_FLAG, STOP_FILE]:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
+    started_at     = datetime.now().isoformat(timespec="seconds")
+    end_date_dt    = datetime.today()
+    start_date_dt  = end_date_dt - timedelta(days=6 * 365)
+    start_date     = start_date_dt.strftime("%Y-%m-%d")
+    end_date       = end_date_dt.strftime("%Y-%m-%d")
     base_threshold = 50
-    total_sectors = len(SECTORS_LIST)
+    total_sectors  = len(SECTORS_LIST)
+
+    write_status(state="running", message="האימון האוטומטי התחיל",
+                 progress=0, started_at=started_at)
 
     try:
         for sector_idx, (slot, tickers) in enumerate(SECTORS_LIST, start=1):
+            # ── בדיקת עצירה בין סקטורים ──
+            if _stop_requested or os.path.exists(STOP_FILE):
+                log_message("Stop requested between sectors — exiting gracefully.")
+                write_status(state="stopped", message="האימון עצר לפי בקשת המשתמש",
+                             progress=int(((sector_idx - 1) / total_sectors) * 100),
+                             started_at=started_at)
+                break
+
             slot_str = str(slot)
-            log_message(f"Processing sector {sector_idx}/{total_sectors}: {slot_str}")
+            log_message(f"--- Sector {sector_idx}/{total_sectors}: {slot_str} ---")
 
             write_status(
                 state="running",
@@ -454,141 +322,107 @@ def run_auto_trainer(wait_for_lock=False, lock_timeout_seconds=0):
             )
 
             features_list, added_trades, errors = train_sector(
-                slot=slot_str,
-                tickers=tickers,
-                start_date=start_date,
-                end_date=end_date,
-                base_threshold=base_threshold,
+                slot_str, tickers, start_date, end_date, base_threshold,
             )
 
-            safe_slot_name = clean_filename(slot_str)
-            history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
-            log_message(f"history_path: {history_path}")
+            safe_name    = clean_filename(slot_str)
+            history_path = os.path.join(MODEL_DIR, f"training_data_{safe_name}.csv")
 
             new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
 
             if os.path.exists(history_path):
                 try:
-                    hist_df = pd.read_csv(history_path)
-                    if not new_df.empty:
-                        combined_df = (
-                            pd.concat([hist_df, new_df], ignore_index=True)
-                            .drop_duplicates(subset=["ticker", "entry_date"], keep="last")
-                        )
-                    else:
-                        combined_df = hist_df
-                except Exception as e:
-                    log_message(f"[{slot_str}] failed reading history_path, using new_df only: {e}")
+                    hist_df     = pd.read_csv(history_path)
+                    combined_df = (
+                        pd.concat([hist_df, new_df], ignore_index=True)
+                        .drop_duplicates(subset=["ticker", "entry_date"], keep="last")
+                    ) if not new_df.empty else hist_df
+                except Exception:
                     combined_df = new_df
             else:
                 combined_df = new_df
 
             if combined_df.empty:
                 log_message(f"[{slot_str}] No trades — skipping.")
-                write_status(
-                    state="running",
-                    message=f"סקטור {slot_str} הסתיים ללא עסקאות",
-                    progress=int((sector_idx / total_sectors) * 100),
-                    current_slot=slot_str,
-                    started_at=started_at,
-                )
-                gc.collect()
                 continue
 
             combined_df.to_csv(history_path, index=False)
-            log_message(
-                f"[{slot_str}] {added_trades} new trades | total: {len(combined_df)} | errors: {errors}"
-            )
+            log_message(f"[{slot_str}] +{added_trades} trades | total: {len(combined_df)} | errors: {errors}")
 
             if combined_df["label"].nunique() < 2:
-                log_message(f"[{slot_str}] Less than 2 classes — skipping model training.")
-                write_status(
-                    state="running",
-                    message=f"סקטור {slot_str} נשמר, אבל אין מספיק מחלקות לאימון",
-                    progress=int((sector_idx / total_sectors) * 100),
-                    current_slot=slot_str,
-                    started_at=started_at,
-                )
-                gc.collect()
+                log_message(f"[{slot_str}] < 2 classes — skipping model fit.")
                 continue
 
             X, y, le = _build_X_y(combined_df)
-
             model = RandomForestClassifier(
-                n_estimators=100,
-                max_depth=3,
-                min_samples_leaf=3,
-                oob_score=True,
-                random_state=42,
-                n_jobs=-1,
+                n_estimators=100, max_depth=3, min_samples_leaf=3,
+                oob_score=True, random_state=42, n_jobs=-1,
             )
             model.fit(X, y)
-
-            try:
-                train_acc = model.oob_score_
-            except Exception:
-                train_acc = model.score(X, y)
+            try:    train_acc = model.oob_score_
+            except: train_acc = model.score(X, y)
 
             optimal_th = calculate_optimal_threshold(model, X, y)
             meta = {
-                "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
-                "train_acc": train_acc,
-                "test_acc": train_acc,
-                "slot": slot_str,
-                "model_type": "Wyckoff-Anchored",
-                "num_trades": len(combined_df),
+                "train_ticker":          "AUTO_TRAINER_MASTER_LIBRARY",
+                "train_acc":             train_acc,
+                "test_acc":              train_acc,
+                "slot":                  slot_str,
+                "model_type":            "Wyckoff-Anchored",
+                "num_trades":            len(combined_df),
                 "recommended_threshold": optimal_th,
             }
-
             save_model_to_disk(slot_str, model, meta, le)
-            log_message(
-                f"[{slot_str}] Model saved. OOB: {train_acc:.3f} | Threshold: {optimal_th}"
-            )
+            log_message(f"[{slot_str}] Model saved | OOB: {train_acc:.3f} | Threshold: {optimal_th}")
 
             write_status(
                 state="running",
-                message=f"סקטור {slot_str} הושלם",
+                message=f"סקטור {slot_str} הושלם ({sector_idx}/{total_sectors})",
                 progress=int((sector_idx / total_sectors) * 100),
                 current_slot=slot_str,
                 started_at=started_at,
             )
+            time.sleep(1)
 
-            del X, y, le, model, combined_df, new_df, features_list
-            gc.collect()
-            time.sleep(0.5)
-
-        finished_at = datetime.now().isoformat(timespec="seconds")
-        write_status(
-            state="completed",
-            message="האימון האוטומטי הסתיים בהצלחה",
-            progress=100,
-            started_at=started_at,
-            finished_at=finished_at,
-            current_slot="DONE",
-        )
-
-        with open(DONE_FLAG, "w", encoding="utf-8") as f:
-            f.write(f"completed_at={finished_at}\n")
-
-        log_message("=== run_auto_trainer DONE ===")
+        else:
+            # הלולאה הסתיימה ללא break — הצלחה מלאה
+            finished_at = datetime.now().isoformat(timespec="seconds")
+            write_status(
+                state="completed",
+                message="האימון האוטומטי הסתיים בהצלחה",
+                progress=100,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+            try:
+                with open(DONE_FLAG, "w", encoding="utf-8") as f:
+                    f.write(f"completed_at={finished_at}\n")
+            except Exception:
+                pass
+            log_message("=== run_auto_trainer DONE ===")
 
     except Exception as e:
-        error_msg = traceback.format_exc()
-        log_message(f"Critical error: {error_msg}")
-        write_status(
-            state="error",
-            message="האימון נכשל",
-            progress=0,
-            error=str(e),
-            started_at=started_at,
-            current_slot="ERROR",
-        )
+        log_message(f"CRITICAL ERROR: {traceback.format_exc()}")
+        write_status(state="error", message="האימון נכשל",
+                     progress=0, error=str(e), started_at=started_at)
         raise
 
     finally:
-        release_lock()
-        gc.collect()
+        # ── תמיד: שחרר מנעול ו-PID ─────────────────────────
+        for f in [LOCK_FILE, PID_FILE]:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+        # נקה STOP_FILE אם נשאר
+        if os.path.exists(STOP_FILE):
+            try:
+                os.remove(STOP_FILE)
+            except Exception:
+                pass
 
 
+# ── כניסה ישירה מ-CLI ─────────────────────────────────────
 if __name__ == "__main__":
     run_auto_trainer()
