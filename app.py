@@ -53,30 +53,21 @@ def _hunt_for_trainer():
     4. חיפוש רקורסיבי בתיקיית BASE_DIR (עד עומק 3)
     """
     target_name = "auto_trainer_fixed.py"
-    # מיקום צפוי: באותה תיקייה של app.py
     primary = os.path.join(BASE_DIR, target_name)
     if os.path.isfile(primary):
         return primary
-
-    # תיקיית העבודה
     cwd_candidate = os.path.join(os.getcwd(), target_name)
     if os.path.isfile(cwd_candidate):
         return cwd_candidate
-
-    # תיקיית הורה
     parent_candidate = os.path.join(os.path.dirname(BASE_DIR), target_name)
     if os.path.isfile(parent_candidate):
         return parent_candidate
-
-    # חיפוש רקורסיבי בתוך BASE_DIR (עד עומק 3)
     for root, dirs, files in os.walk(BASE_DIR):
         depth = root[len(BASE_DIR):].count(os.sep)
         if depth > 3:
             continue
         if target_name in files:
             return os.path.join(root, target_name)
-
-    # fallback - מחזיר את הנתיב הראשי, גם אם הקובץ לא קיים (לצורך הודעת שגיאה)
     return primary
 
 TRAINER_SCRIPT = _hunt_for_trainer()
