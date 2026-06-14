@@ -1,6 +1,6 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.13
-# Background Auto-Trainer Control + Smart Path Resolution
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.14
+# Background Auto-Trainer Control + Aggressive Cleanup & Smart Path
 # ============================================================
 import sys
 import os
@@ -42,13 +42,19 @@ from scout_core import (
 # ============================================================
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 
-# ניסיון חכם למצוא את הקובץ - עוקף בעיות נתיב בענן
-TRAINER_SCRIPT = os.path.join(BASE_DIR, "trainer_core.py")
-if not os.path.exists(TRAINER_SCRIPT):
-    fallback_path = os.path.join(os.getcwd(), "trainer_core.py")
-    if os.path.exists(fallback_path):
-        TRAINER_SCRIPT = fallback_path
+# ציד אגרסיבי אחרי הקובץ trainer_core.py
+def _hunt_for_trainer():
+    candidates = [
+        os.path.join(BASE_DIR, "trainer_core.py"),
+        os.path.join(os.getcwd(), "trainer_core.py"),
+        os.path.join(os.path.dirname(BASE_DIR), "trainer_core.py"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return os.path.join(BASE_DIR, "trainer_core.py") # Fallback
 
+TRAINER_SCRIPT = _hunt_for_trainer()
 TRAINER_AVAILABLE = os.path.exists(TRAINER_SCRIPT)
 
 AUTO_TRAINER_STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
@@ -196,20 +202,38 @@ def write_stop_request():
 
 def cleanup_stale_trainer_artifacts():
     pid = read_trainer_pid()
-    if pid is not None and not _is_pid_running(pid):
+    is_running = False
+    
+    if pid is not None:
+        is_running = _is_pid_running(pid)
+        if not is_running:
+            try:
+                os.remove(AUTO_TRAINER_PID_FILE)
+            except Exception:
+                pass
+
+    # ניקוי אגרסיבי של בקשת עצירה אם אף תהליך לא רץ באמת
+    if not is_running and os.path.exists(AUTO_TRAINER_STOP_FILE):
         try:
-            os.remove(AUTO_TRAINER_PID_FILE)
+            os.remove(AUTO_TRAINER_STOP_FILE)
         except Exception:
             pass
 
     status = read_auto_trainer_status()
-    if status.get("state") in {"running", "stopping"} and pid is None and os.path.exists(AUTO_TRAINER_LOCK_FILE):
-        try:
-            age = time.time() - os.path.getmtime(AUTO_TRAINER_LOCK_FILE)
-            if age > 6 * 60 * 60:
+    if os.path.exists(AUTO_TRAINER_LOCK_FILE):
+        # אם הסטטוס מראה ריצה אבל התהליך מת, נמחק את המנעול
+        if not is_running and status.get("state") in {"running", "stopping"}:
+            try:
                 os.remove(AUTO_TRAINER_LOCK_FILE)
-        except Exception:
-            pass
+            except Exception:
+                pass
+        else:
+            try:
+                age = time.time() - os.path.getmtime(AUTO_TRAINER_LOCK_FILE)
+                if age > 6 * 60 * 60:  # 6 שעות
+                    os.remove(AUTO_TRAINER_LOCK_FILE)
+            except Exception:
+                pass
 
 
 def is_trainer_running():
@@ -505,6 +529,9 @@ def render_active_ai_selector_widget(screen_identifier):
 
 
 def render_trainer_control_panel():
+    # קריאה לנקות שאריות מתבצעת כאן בצורה חכמה שקופה למשתמש
+    cleanup_stale_trainer_artifacts()
+    
     status = read_auto_trainer_status()
     pid = read_trainer_pid()
     running = is_trainer_running()
@@ -1024,45 +1051,4 @@ def screen_ml_trainer():
             save_path = save_model_to_disk(target_slot, model, meta, le)
             st.session_state.model_archive = load_all_models_from_disk()
             st.session_state.ml_model = model
-            st.session_state.ml_metadata = meta
-            st.session_state.phase_encoder = le
-            st.session_state.use_ml = True
-            st.success(f"✅ אימון הושלם! מודל נשמר: {save_path}")
-            c_r1, c_r2, c_r3 = st.columns(3)
-            c_r1.metric("דיוק OOB", f"{train_acc*100:.1f}%")
-            c_r2.metric("סה\"כ עסקאות בספרייה", len(combined_df))
-            c_r3.metric("🎯 Threshold מומלץ", optimal_th)
-
-    st.markdown("---")
-    render_trainer_control_panel()
-
-    st.markdown("---")
-    with st.expander("📝 יומן ריצה ושגיאות", expanded=False):
-        if os.path.exists(AUTO_TRAINER_LOG_FILE):
-            try:
-                with open(AUTO_TRAINER_LOG_FILE, "r", encoding="utf-8") as f:
-                    logs = f.read()
-                st.text_area("היומן המלא:", logs[-5000:], height=300)
-                if st.button("🗑️ נקה יומן"):
-                    open(AUTO_TRAINER_LOG_FILE, "w").close()
-                    st.rerun()
-            except Exception as e:
-                st.warning(f"לא ניתן לקרוא את קובץ הלוג: {e}")
-        else:
-            st.info("קובץ היומן עדיין לא נוצר. יופיע כשהאימון יתחיל.")
-
-
-# ============================================================
-# ניתוב
-# ============================================================
-routes = {
-    "wyckoff": screen_wyckoff,
-    "vp": screen_vp,
-    "vwap": screen_vwap,
-    "composite": screen_composite,
-    "backtest": screen_backtest,
-    "ml": screen_ml_trainer,
-    "scanner": screen_scanner,
-    "monitor": screen_monitor,
-}
-routes[st.session_state.mode]()
+            st.
