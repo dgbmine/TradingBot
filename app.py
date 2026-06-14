@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.5
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.6 (SAFE IMPORT EDITION)
 # ============================================================
 import sys
 import os
@@ -31,8 +31,21 @@ from scout_core import (
     build_research_ground_truth,
 )
 
-# ייבוא הטריינר בשמו החדש
-from trainer_core import run_auto_trainer
+# ============================================================
+# הגנה על ייבוא הטריינר - מונע קריסה מוחלטת של האפליקציה
+# ============================================================
+try:
+    from trainer_core import run_auto_trainer
+    TRAINER_AVAILABLE = True
+    TRAINER_ERROR = ""
+except ModuleNotFoundError as e:
+    run_auto_trainer = None
+    TRAINER_AVAILABLE = False
+    TRAINER_ERROR = str(e)
+except Exception as e:
+    run_auto_trainer = None
+    TRAINER_AVAILABLE = False
+    TRAINER_ERROR = f"שגיאה פנימית בקובץ הטריינר: {str(e)}"
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
@@ -680,17 +693,20 @@ def screen_ml_trainer():
     st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
 
     if st.button("🚀 הזנק אימון אוטומטי מלא", type="primary", use_container_width=True):
-        with st.spinner("האימון רץ... אל תרענן את הדף."):
-            try:
-                run_auto_trainer()
-                st.success("✅ האימון האוטומטי הושלם בהצלחה!")
-                st.session_state.model_archive = load_all_models_from_disk()
-                time.sleep(2)
-                st.rerun()
-            except Exception:
-                import traceback
-                st.error("❌ האימון נכשל. הנה השגיאה המדויקת:")
-                st.code(traceback.format_exc(), language="text")
+        if not TRAINER_AVAILABLE:
+            st.error(f"❌ שגיאת מערכת: לא ניתן להריץ את האימון.\n\nהמערכת לא מוצאת את הקובץ `trainer_core.py` או שיש בו שגיאת קידוד. אנא ודא שהקובץ נמצא בתיקיית הפרויקט המרכזית בגיטהאב וששמו נכתב בדיוק כך.\n\nפרטי השגיאה הטכנית:\n{TRAINER_ERROR}")
+        else:
+            with st.spinner("האימון רץ... אל תרענן את הדף."):
+                try:
+                    run_auto_trainer()
+                    st.success("✅ האימון האוטומטי הושלם בהצלחה!")
+                    st.session_state.model_archive = load_all_models_from_disk()
+                    time.sleep(2)
+                    st.rerun()
+                except Exception:
+                    import traceback
+                    st.error("❌ האימון נכשל. הנה השגיאה המדויקת:")
+                    st.code(traceback.format_exc(), language="text")
 
     with st.expander("📝 יומן ריצה ושגיאות", expanded=False):
         if os.path.exists(LOG_FILE_PATH):
