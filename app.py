@@ -46,35 +46,35 @@ MODEL_DIR = os.path.join(BASE_DIR, "models")
 
 def _hunt_for_trainer():
     """
-    מחפש את trainer_core.py בצורה אגרסיבית:
+    מחפש את auto_trainer_fixed.py בצורה אגרסיבית:
     1. באותה תיקייה של app.py
     2. בתיקיית העבודה הנוכחית
     3. בתיקיית ההורה
     4. חיפוש רקורסיבי בתיקיית BASE_DIR (עד עומק 3)
     """
+    target_name = "auto_trainer_fixed.py"
     # מיקום צפוי: באותה תיקייה של app.py
-    primary = os.path.join(BASE_DIR, "trainer_core.py")
+    primary = os.path.join(BASE_DIR, target_name)
     if os.path.isfile(primary):
         return primary
 
     # תיקיית העבודה
-    cwd_candidate = os.path.join(os.getcwd(), "trainer_core.py")
+    cwd_candidate = os.path.join(os.getcwd(), target_name)
     if os.path.isfile(cwd_candidate):
         return cwd_candidate
 
     # תיקיית הורה
-    parent_candidate = os.path.join(os.path.dirname(BASE_DIR), "trainer_core.py")
+    parent_candidate = os.path.join(os.path.dirname(BASE_DIR), target_name)
     if os.path.isfile(parent_candidate):
         return parent_candidate
 
     # חיפוש רקורסיבי בתוך BASE_DIR (עד עומק 3)
     for root, dirs, files in os.walk(BASE_DIR):
-        # הגבלת עומק
         depth = root[len(BASE_DIR):].count(os.sep)
         if depth > 3:
             continue
-        if "trainer_core.py" in files:
-            return os.path.join(root, "trainer_core.py")
+        if target_name in files:
+            return os.path.join(root, target_name)
 
     # fallback - מחזיר את הנתיב הראשי, גם אם הקובץ לא קיים (לצורך הודעת שגיאה)
     return primary
@@ -168,7 +168,6 @@ def _is_pid_running(pid):
         return False
 
 def read_trainer_pid():
-    """קורא את ה-PID מהקובץ, ומוודא שהתהליך עדיין רץ. מחזיר None אם לא."""
     if not os.path.exists(AUTO_TRAINER_PID_FILE):
         return None
     try:
@@ -183,7 +182,6 @@ def read_trainer_pid():
         return None
     if _is_pid_running(pid):
         return pid
-    # PID לא רץ – נקה את הקובץ
     try:
         os.remove(AUTO_TRAINER_PID_FILE)
     except Exception:
@@ -191,15 +189,13 @@ def read_trainer_pid():
     return None
 
 def write_trainer_pid(pid):
-    """כותב PID לקובץ בצורה אטומית (כתיבה לקובץ זמני ואז rename)."""
     os.makedirs(MODEL_DIR, exist_ok=True)
     tmp_file = AUTO_TRAINER_PID_FILE + ".tmp"
     try:
         with open(tmp_file, "w", encoding="utf-8") as f:
             f.write(str(int(pid)))
-        os.replace(tmp_file, AUTO_TRAINER_PID_FILE)  # פעולה אטומית במערכת הקבצים
+        os.replace(tmp_file, AUTO_TRAINER_PID_FILE)
     except Exception:
-        # fallback
         with open(AUTO_TRAINER_PID_FILE, "w", encoding="utf-8") as f:
             f.write(str(int(pid)))
 
@@ -220,18 +216,15 @@ def write_stop_request():
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 def cleanup_stale_trainer_artifacts():
-    """מנקה קבצי PID, STOP, LOCK תקועים אם התהליך לא רץ."""
     pid = read_trainer_pid()
-    is_running = pid is not None  # read_trainer_pid כבר בדק ומחק אם לא רץ
+    is_running = pid is not None
 
-    # מחק STOP_FILE אם התהליך לא רץ
     if not is_running and os.path.exists(AUTO_TRAINER_STOP_FILE):
         try:
             os.remove(AUTO_TRAINER_STOP_FILE)
         except Exception:
             pass
 
-    # טפל ב-LOCK_FILE
     if os.path.exists(AUTO_TRAINER_LOCK_FILE):
         status = read_auto_trainer_status()
         if not is_running and status.get("state") in {"running", "stopping"}:
@@ -242,7 +235,7 @@ def cleanup_stale_trainer_artifacts():
         else:
             try:
                 age = time.time() - os.path.getmtime(AUTO_TRAINER_LOCK_FILE)
-                if age > 6 * 3600:  # 6 שעות
+                if age > 6 * 3600:
                     os.remove(AUTO_TRAINER_LOCK_FILE)
             except Exception:
                 pass
@@ -287,13 +280,12 @@ def _send_sigkill(pid):
         pass
 
 def start_trainer_process():
-    """מפעיל את trainer_core.py כתהליך נפרד. מחזיר PID."""
+    """מפעיל את auto_trainer_fixed.py כתהליך נפרד. מחזיר PID."""
     if not TRAINER_AVAILABLE:
-        # אבחון מפורט
         if os.path.isdir(BASE_DIR):
             files_in_root = os.listdir(BASE_DIR)
             msg = (
-                f"קובץ trainer_core.py לא נמצא!\n"
+                f"קובץ auto_trainer_fixed.py לא נמצא!\n"
                 f"נתיב צפוי: {TRAINER_SCRIPT}\n"
                 f"תיקיית האפליקציה (BASE_DIR): {BASE_DIR}\n"
                 f"קבצים בתיקייה: {files_in_root}\n"
@@ -312,11 +304,10 @@ def start_trainer_process():
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    # נפתח את קובץ הלוג לצורך ניתוב הפלט של התהליך
     log_handle = open(AUTO_TRAINER_LOG_FILE, "a", encoding="utf-8")
     try:
         kwargs = {
-            "cwd": os.path.dirname(TRAINER_SCRIPT),  # תקיית העבודה תהיה תיקיית הקובץ
+            "cwd": os.path.dirname(TRAINER_SCRIPT),
             "stdout": log_handle,
             "stderr": subprocess.STDOUT,
             "env": env,
