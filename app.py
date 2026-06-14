@@ -1,6 +1,6 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.15
-# Background Auto-Trainer Control + Aggressive Cleanup & Smart Path
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.16
+# Safe Subprocess Background Auto-Trainer Control
 # ============================================================
 import sys
 import os
@@ -212,7 +212,6 @@ def cleanup_stale_trainer_artifacts():
             except Exception:
                 pass
 
-    # ניקוי אגרסיבי של בקשת עצירה אם אף תהליך לא רץ באמת
     if not is_running and os.path.exists(AUTO_TRAINER_STOP_FILE):
         try:
             os.remove(AUTO_TRAINER_STOP_FILE)
@@ -221,7 +220,6 @@ def cleanup_stale_trainer_artifacts():
 
     status = read_auto_trainer_status()
     if os.path.exists(AUTO_TRAINER_LOCK_FILE):
-        # אם הסטטוס מראה ריצה אבל התהליך מת, נמחק את המנעול
         if not is_running and status.get("state") in {"running", "stopping"}:
             try:
                 os.remove(AUTO_TRAINER_LOCK_FILE)
@@ -230,7 +228,7 @@ def cleanup_stale_trainer_artifacts():
         else:
             try:
                 age = time.time() - os.path.getmtime(AUTO_TRAINER_LOCK_FILE)
-                if age > 6 * 60 * 60:  # 6 שעות
+                if age > 6 * 60 * 60:
                     os.remove(AUTO_TRAINER_LOCK_FILE)
             except Exception:
                 pass
@@ -529,7 +527,6 @@ def render_active_ai_selector_widget(screen_identifier):
 
 
 def render_trainer_control_panel():
-    # קריאה לנקות שאריות מתבצעת כאן בצורה חכמה שקופה למשתמש
     cleanup_stale_trainer_artifacts()
     
     status = read_auto_trainer_status()
@@ -577,7 +574,7 @@ def render_trainer_control_panel():
             try:
                 ok = stop_trainer_process(grace_seconds=5)
                 if ok:
-                    st.warning("נשלחה בקשת עצירה לתהליך. הוא יקבל כמה שניות להיסגר בצורה מסודרת.")
+                    st.warning("נשלחה בקשת עצירה. הטריינר יסיים את המניה הנוכחית ויעצור בצורה מסודרת.")
                 else:
                     st.info("לא נמצא תהליך רץ לעצירה.")
                 st.rerun()
@@ -587,7 +584,7 @@ def render_trainer_control_panel():
     with b3:
         st.info(
             "האימון רץ כתהליך רקע נפרד. Streamlit יכול להתרענן בלי לקטוע את הריצה באמצע. "
-            "כפתור העצירה שולח בקשת עצירה רכה ואז מסיים בכוח רק אם צריך."
+            "כפתור העצירה מנצל את המנגנון החדש לעצירה רכה."
         )
 
     if status.get("state") in {"running", "stopping", "locked"}:
