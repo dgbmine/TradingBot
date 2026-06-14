@@ -1,5 +1,6 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.10 (NUCLEAR REBOOT)
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.12
+# Background Auto-Trainer Control + Start/Stop
 # ============================================================
 import sys
 import os
@@ -7,8 +8,9 @@ import json
 import pickle
 import time
 import traceback
-import importlib.util
-from datetime import datetime, timedelta
+import subprocess
+import signal
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -20,7 +22,8 @@ import streamlit as st
 import plotly.graph_objects as go
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(BASE_DIR)
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
 
 # ייבוא מפורש מ-scout_core — אין import *
 from scout_core import (
@@ -35,313 +38,29 @@ from scout_core import (
 )
 
 # ============================================================
-# טעינת trainer_core.py + fallback פנימי כדי לא להיתקע
+# Paths / Files
 # ============================================================
-def _load_external_run_auto_trainer():
-    """מנסה לטעון את trainer_core.py אם הוא באמת קיים ותקין."""
-    env_path = os.environ.get("TRAINER_CORE_PATH")
-    candidates = []
+MODEL_DIR = os.path.join(BASE_DIR, "models")
+TRAINER_SCRIPT = os.path.join(BASE_DIR, "trainer_core.py")
 
-    if env_path:
-        candidates.append(env_path)
+AUTO_TRAINER_STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
+AUTO_TRAINER_DONE_FLAG   = os.path.join(MODEL_DIR, "auto_trainer.done")
+AUTO_TRAINER_LOG_FILE    = os.path.join(BASE_DIR, "auto_trainer_error.log")
+AUTO_TRAINER_PID_FILE    = os.path.join(MODEL_DIR, "auto_trainer.pid")
+AUTO_TRAINER_STOP_FILE   = os.path.join(MODEL_DIR, "auto_trainer.stop")
+AUTO_TRAINER_LOCK_FILE   = os.path.join(MODEL_DIR, "auto_trainer.lock")
 
-    candidates.extend([
-        os.path.join(BASE_DIR, "trainer_core.py"),
-        os.path.join(os.getcwd(), "trainer_core.py"),
-        os.path.join(os.path.dirname(BASE_DIR), "trainer_core.py"),
-        os.path.join(BASE_DIR, "main", "trainer_core.py"),
-    ])
-
-    seen = set()
-    for p in candidates:
-        if not p:
-            continue
-        p = os.path.abspath(p)
-        if p in seen:
-            continue
-        seen.add(p)
-        if os.path.exists(p):
-            try:
-                spec = importlib.util.spec_from_file_location("trainer_core", p)
-                if spec is None or spec.loader is None:
-                    continue
-                module = importlib.util.module_from_spec(spec)
-                sys.modules["trainer_core"] = module
-                spec.loader.exec_module(module)
-                if hasattr(module, "run_auto_trainer"):
-                    return module.run_auto_trainer, True, p, "external"
-            except Exception as e:
-                return None, False, p, f"שגיאה בטעינת trainer_core.py: {e}"
-
-    return None, False, None, "trainer_core.py לא נטען מהדיסק"
-
-
-def _embedded_run_auto_trainer():
-    """Fallback מלא: רץ גם אם trainer_core.py לא נמצא או יש בו תקלה."""
-    LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
-    MODEL_DIR = os.path.join(BASE_DIR, "models")
-    STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
-    DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
-
-    def log_message(msg):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
-
-    GROWTH_TICKERS = [
-        "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
-        "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
-        "PANW","CRWD","FTNT","ZS","DDOG","SNOW","MDB","NET","PLTR",
-        "UBER","ABNB","COIN","SOFI","UPST","ONTO","KLAC","LRCX",
-        "AMAT","MRVL","SMCI","DELL","HPQ","RBLX","U","TTWO","EA",
-    ]
-
-    VALUE_TICKERS = [
-        "BRK-B","JPM","JNJ","V","UNH","PG","MA","HD","MRK","ABBV",
-        "PEP","KO","COST","WMT","LLY","TMO","MCD","ACN","BAC","ABT",
-        "DHR","RTX","HON","NKE","AMGN","PM","IBM","SBUX","GS","CAT",
-        "BA","GE","SPGI","AXP","BLK","DE","ISRG","MDLZ","GILD",
-        "REGN","SYK","ZTS","MMC","AON","TJX","SCHW","CB","USB","WFC",
-        "C","MS","CVS","CI","AMT","PLD","CCI","EQIX","SPG","O",
-        "WELL","DLR","DIS","CMCSA","DAL","UAL","AAL","LUV","FDX",
-        "UPS","XPO","ODFL","DKNG","MGM","CZR","RCL","CCL","MAR","HLT",
-    ]
-
-    COMMODITIES_TICKERS = [
-        "XOM","CVX","SLB","EOG","OXY","COP","PSX","VLO",
-        "FCX","NEM","GOLD","AEM","WPM","FNV","PAAS","AG",
-        "GLD","SLV",
-    ]
-
-    SECTORS_LIST = [
-        ("Growth (צמיחה)", GROWTH_TICKERS),
-        ("Value/Index (ערך/מדד)", VALUE_TICKERS),
-        ("Commodities (סחורות)", COMMODITIES_TICKERS),
-    ]
-
-    def save_model_to_disk(slot_name, model, metadata, encoder):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        safe_name = clean_filename(str(slot_name))
-        file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
-        with open(file_path, "wb") as f:
-            pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f)
-        return file_path
-
-    def write_status(state, message="", progress=0, current_slot="N/A", started_at=None, finished_at=None, error=None):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        payload = {
-            "state": state,
-            "message": message,
-            "progress": int(progress),
-            "current_slot": str(current_slot),
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "started_at": started_at or datetime.now().isoformat(timespec="seconds"),
-            "finished_at": finished_at or "N/A",
-        }
-        if error:
-            payload["error"] = str(error)
-        with open(STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_profile="Aggressive"):
-        features_list = []
-        errors = 0
-        added_trades = 0
-        engine = FactorEngine(BacktestConfig())
-
-        macro = None
-        try:
-            spy = yf.download("SPY", start=start_date, end=end_date, progress=False)["Close"].rename("SPY_Close")
-            vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)["Close"].rename("VIX_Close")
-            macro = pd.concat([spy, vix], axis=1).ffill().bfill()
-            macro.index = pd.to_datetime(macro.index).date
-        except Exception:
-            macro = None
-
-        for ticker in tickers:
-            time.sleep(0.1)
-            try:
-                bt_df, audit_df = run_wyckoff_anchored_backtest(
-                    ticker, use_ai=False, threshold=base_threshold,
-                    period=None, start=start_date, end=end_date,
-                    risk_profile=risk_profile,
-                )
-                if audit_df is None or audit_df.empty:
-                    continue
-
-                df = bt_df.copy()
-                if macro is not None and not df.empty:
-                    df["date_key"] = df.index.date
-                    df = df.merge(macro, left_on="date_key", right_index=True, how="left")
-                    df.drop(columns="date_key", inplace=True)
-                    for col in ["SPY_Close", "VIX_Close"]:
-                        if col in df.columns:
-                            df[col] = df[col].ffill().bfill().fillna(0)
-
-                for _, trade in audit_df.iterrows():
-                    entry_dt = pd.Timestamp(trade["entry_date"])
-                    if entry_dt not in df.index:
-                        continue
-                    window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
-                    try:
-                        factors = engine.compute(window_df)
-                        if len(factors) == 0:
-                            continue
-                        factors = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
-                        feature_row = factors.iloc[-1].to_dict()
-                        raw_phase = df.loc[entry_dt]["wyckoff_phase"]
-                        if isinstance(raw_phase, pd.Series):
-                            raw_phase = raw_phase.iloc[-1]
-                        feature_row["phase"] = raw_phase
-                        feature_row["label"] = 1 if trade["win"] else 0
-                        feature_row["ticker"] = ticker
-                        feature_row["entry_date"] = trade["entry_date"]
-                        features_list.append(feature_row)
-                        added_trades += 1
-                    except Exception:
-                        continue
-            except Exception:
-                errors += 1
-                continue
-
-        return features_list, added_trades, errors
-
-    def _build_X_y(combined_df):
-        y = combined_df["label"].values
-        le = LabelEncoder()
-        phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
-        phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
-        drop_cols = ["phase", "label", "ticker", "entry_date"]
-        tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns]).select_dtypes(include=[np.number])
-        X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1)
-        X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
-        return X, y, le
-
-    log_message("=== embedded run_auto_trainer START ===")
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    if os.path.exists(DONE_FLAG):
-        os.remove(DONE_FLAG)
-
-    started_at = datetime.now().isoformat(timespec="seconds")
-    write_status(state="running", message="האימון האוטומטי התחיל", progress=0, started_at=started_at)
-
-    end_date_dt = datetime.today()
-    start_date_dt = end_date_dt - timedelta(days=6 * 365)
-    start_date = start_date_dt.strftime("%Y-%m-%d")
-    end_date = end_date_dt.strftime("%Y-%m-%d")
-    base_threshold = 50
-    total_sectors = len(SECTORS_LIST)
-
-    try:
-        for sector_idx, (slot, tickers) in enumerate(SECTORS_LIST, start=1):
-            slot_str = str(slot)
-            log_message(f"Processing sector {sector_idx}/{total_sectors}: {slot_str}")
-            write_status(
-                state="running",
-                message=f"מעבד סקטור: {slot_str}",
-                progress=int(((sector_idx - 1) / total_sectors) * 100),
-                current_slot=slot_str,
-                started_at=started_at,
-            )
-
-            features_list, added_trades, errors = train_sector(
-                slot=slot_str, tickers=tickers,
-                start_date=start_date, end_date=end_date,
-                base_threshold=base_threshold,
-            )
-
-            safe_slot_name = clean_filename(slot_str)
-            history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
-            new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
-
-            if os.path.exists(history_path):
-                try:
-                    hist_df = pd.read_csv(history_path)
-                    combined_df = pd.concat([hist_df, new_df], ignore_index=True).drop_duplicates(subset=["ticker", "entry_date"], keep="last") if not new_df.empty else hist_df
-                except Exception:
-                    combined_df = new_df
-            else:
-                combined_df = new_df
-
-            if combined_df.empty:
-                log_message(f"[{slot_str}] No trades — skipping.")
-                continue
-
-            combined_df.to_csv(history_path, index=False)
-            log_message(f"[{slot_str}] {added_trades} new trades | total: {len(combined_df)} | errors: {errors}")
-
-            if combined_df["label"].nunique() < 2:
-                log_message(f"[{slot_str}] Less than 2 classes — skipping model training.")
-                continue
-
-            X, y, le = _build_X_y(combined_df)
-            model = RandomForestClassifier(
-                n_estimators=100, max_depth=3, min_samples_leaf=3,
-                oob_score=True, random_state=42, n_jobs=-1,
-            )
-            model.fit(X, y)
-            try:
-                train_acc = model.oob_score_
-            except Exception:
-                train_acc = model.score(X, y)
-
-            optimal_th = calculate_optimal_threshold(model, X, y)
-            meta = {
-                "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
-                "train_acc": train_acc,
-                "test_acc": train_acc,
-                "slot": slot_str,
-                "model_type": "Wyckoff-Anchored",
-                "num_trades": len(combined_df),
-                "recommended_threshold": optimal_th,
-            }
-            save_model_to_disk(slot_str, model, meta, le)
-            log_message(f"[{slot_str}] Model saved. OOB: {train_acc:.3f} | Threshold: {optimal_th}")
-            write_status(state="running", message=f"סקטור {slot_str} הושלם", progress=int((sector_idx / total_sectors) * 100), current_slot=slot_str, started_at=started_at)
-            time.sleep(0.2)
-
-        finished_at = datetime.now().isoformat(timespec="seconds")
-        write_status(state="completed", message="האימון האוטומטי הסתיים בהצלחה", progress=100, started_at=started_at, finished_at=finished_at)
-        with open(DONE_FLAG, "w", encoding="utf-8") as f:
-            f.write(f"completed_at={finished_at}\n")
-        log_message("=== embedded run_auto_trainer DONE ===")
-
-    except Exception as e:
-        error_msg = traceback.format_exc()
-        log_message(f"Critical error: {error_msg}")
-        write_status(state="error", message="האימון נכשל", progress=0, error=str(e))
-        raise
-
-
-# בוחרים מקור אוטומטי אם יש, אחרת fallback מובנה
-_external_trainer, _external_ok, _trainer_path, _trainer_info = _load_external_run_auto_trainer()
-if _external_ok and _external_trainer is not None:
-    run_auto_trainer = _external_trainer
-    TRAINER_AVAILABLE = True
-    TRAINER_SOURCE = "external"
-    TRAINER_ERROR = ""
-else:
-    run_auto_trainer = _embedded_run_auto_trainer
-    TRAINER_AVAILABLE = True
-    TRAINER_SOURCE = "embedded"
-    TRAINER_ERROR = _trainer_info
+TRAINER_AVAILABLE = os.path.exists(TRAINER_SCRIPT)
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
 # ============================================================
-# קבועים כלליים
-# ============================================================
-AUTO_TRAINER_STATUS_FILE = os.path.join(BASE_DIR, "models", "auto_trainer_status.json")
-AUTO_TRAINER_DONE_FLAG   = os.path.join(BASE_DIR, "models", "auto_trainer.done")
-LOG_FILE_PATH            = os.path.join(BASE_DIR, "auto_trainer_error.log")
-
-# ============================================================
-# פונקציות עזר — שמירה / טעינה
+# Helpers
 # ============================================================
 def save_model_to_disk(slot_name, model, metadata, encoder):
-    os.makedirs("models", exist_ok=True)
+    os.makedirs(MODEL_DIR, exist_ok=True)
     safe_name = clean_filename(str(slot_name))
-    file_path = f"models/model_{safe_name}.pkl"
+    file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
     with open(file_path, "wb") as f:
         pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f)
     return file_path
@@ -349,10 +68,10 @@ def save_model_to_disk(slot_name, model, metadata, encoder):
 
 def load_all_models_from_disk():
     loaded = {}
-    if os.path.exists("models"):
-        for filename in os.listdir("models"):
+    if os.path.exists(MODEL_DIR):
+        for filename in os.listdir(MODEL_DIR):
             if filename.endswith(".pkl"):
-                filepath = os.path.join("models", filename)
+                filepath = os.path.join(MODEL_DIR, filename)
                 try:
                     with open(filepath, "rb") as f:
                         data = pickle.load(f)
@@ -387,7 +106,9 @@ def read_auto_trainer_status():
         "updated_at": "N/A",
         "started_at": "N/A",
         "finished_at": "N/A",
+        "pid": "N/A",
     }
+
     if os.path.exists(AUTO_TRAINER_STATUS_FILE):
         try:
             with open(AUTO_TRAINER_STATUS_FILE, "r", encoding="utf-8") as f:
@@ -396,7 +117,235 @@ def read_auto_trainer_status():
             pass
     elif os.path.exists(AUTO_TRAINER_DONE_FLAG):
         default.update({"state": "completed", "message": "האימון הסתיים", "progress": 100})
+
     return default
+
+
+def _is_pid_running(pid):
+    if pid is None:
+        return False
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+
+    if pid <= 0:
+        return False
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def read_trainer_pid():
+    if not os.path.exists(AUTO_TRAINER_PID_FILE):
+        return None
+
+    try:
+        with open(AUTO_TRAINER_PID_FILE, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+        pid = int(raw)
+    except Exception:
+        try:
+            os.remove(AUTO_TRAINER_PID_FILE)
+        except Exception:
+            pass
+        return None
+
+    if _is_pid_running(pid):
+        return pid
+
+    try:
+        os.remove(AUTO_TRAINER_PID_FILE)
+    except Exception:
+        pass
+    return None
+
+
+def write_trainer_pid(pid):
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    with open(AUTO_TRAINER_PID_FILE, "w", encoding="utf-8") as f:
+        f.write(str(int(pid)))
+
+
+def clear_stop_request():
+    if os.path.exists(AUTO_TRAINER_STOP_FILE):
+        try:
+            os.remove(AUTO_TRAINER_STOP_FILE)
+        except Exception:
+            pass
+
+
+def write_stop_request():
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    payload = {
+        "requested_at": datetime.now().isoformat(timespec="seconds"),
+        "pid": read_trainer_pid() or "N/A",
+    }
+    with open(AUTO_TRAINER_STOP_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def cleanup_stale_trainer_artifacts():
+    pid = read_trainer_pid()
+    if pid is not None and not _is_pid_running(pid):
+        try:
+            os.remove(AUTO_TRAINER_PID_FILE)
+        except Exception:
+            pass
+
+    status = read_auto_trainer_status()
+    if status.get("state") in {"running", "stopping"} and pid is None and os.path.exists(AUTO_TRAINER_LOCK_FILE):
+        try:
+            age = time.time() - os.path.getmtime(AUTO_TRAINER_LOCK_FILE)
+            if age > 6 * 60 * 60:
+                os.remove(AUTO_TRAINER_LOCK_FILE)
+        except Exception:
+            pass
+
+
+def is_trainer_running():
+    cleanup_stale_trainer_artifacts()
+    status = read_auto_trainer_status()
+    pid = read_trainer_pid()
+    lock_exists = os.path.exists(AUTO_TRAINER_LOCK_FILE)
+    return (
+        status.get("state") in {"running", "locked", "stopping"}
+        or (pid is not None and _is_pid_running(pid))
+        or lock_exists
+    )
+
+
+def _send_sigterm(pid):
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/T"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            os.kill(int(pid), signal.SIGTERM)
+    except Exception:
+        pass
+
+
+def _send_sigkill(pid):
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            os.kill(int(pid), signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def start_trainer_process():
+    if not TRAINER_AVAILABLE:
+        raise FileNotFoundError(
+            f"קובץ trainer_core.py לא נמצא בנתיב: {TRAINER_SCRIPT}"
+        )
+
+    if is_trainer_running():
+        raise RuntimeError("האימון כבר רץ כרגע.")
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    clear_stop_request()
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    log_handle = open(AUTO_TRAINER_LOG_FILE, "a", encoding="utf-8")
+
+    try:
+        kwargs = {
+            "cwd": BASE_DIR,
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "env": env,
+        }
+
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            kwargs["start_new_session"] = True
+
+        proc = subprocess.Popen([sys.executable, TRAINER_SCRIPT], **kwargs)
+        write_trainer_pid(proc.pid)
+
+        return proc.pid
+    finally:
+        try:
+            log_handle.close()
+        except Exception:
+            pass
+
+
+def stop_trainer_process(grace_seconds=5):
+    pid = read_trainer_pid()
+    write_stop_request()
+
+    if pid is None:
+        status = read_auto_trainer_status()
+        if status.get("state") not in {"running", "stopping"}:
+            return False
+        return True
+
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        stop_payload = {
+            "requested_at": datetime.now().isoformat(timespec="seconds"),
+            "pid": pid,
+        }
+        with open(AUTO_TRAINER_STOP_FILE, "w", encoding="utf-8") as f:
+            json.dump(stop_payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    _send_sigterm(pid)
+
+    deadline = time.time() + float(grace_seconds)
+    while time.time() < deadline:
+        if not _is_pid_running(pid):
+            break
+        time.sleep(0.25)
+
+    if _is_pid_running(pid):
+        _send_sigkill(pid)
+
+    try:
+        if os.path.exists(AUTO_TRAINER_PID_FILE):
+            os.remove(AUTO_TRAINER_PID_FILE)
+    except Exception:
+        pass
+
+    return True
+
+
+def clear_trainer_artifacts():
+    files_to_delete = [
+        AUTO_TRAINER_STATUS_FILE,
+        AUTO_TRAINER_DONE_FLAG,
+        AUTO_TRAINER_LOG_FILE,
+        AUTO_TRAINER_PID_FILE,
+        AUTO_TRAINER_STOP_FILE,
+        AUTO_TRAINER_LOCK_FILE,
+    ]
+    for f in files_to_delete:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
 
 # ============================================================
 # Universe
@@ -548,6 +497,70 @@ def render_active_ai_selector_widget(screen_identifier):
             st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
+
+def render_trainer_control_panel():
+    status = read_auto_trainer_status()
+    pid = read_trainer_pid()
+    running = is_trainer_running()
+    lock_exists = os.path.exists(AUTO_TRAINER_LOCK_FILE)
+    stop_exists = os.path.exists(AUTO_TRAINER_STOP_FILE)
+
+    st.markdown("### 🚦 Auto-Trainer Control")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("מצב", status.get("state", "idle"))
+    c2.metric("התקדמות", f"{status.get('progress', 0)}%")
+    c3.metric("PID", str(pid) if pid is not None else str(status.get("pid", "N/A")))
+    c4.metric("סקטור נוכחי", status.get("current_slot", "N/A"))
+
+    st.caption(
+        f"Lock: {'קיים' if lock_exists else 'לא קיים'} | "
+        f"Stop request: {'קיים' if stop_exists else 'לא קיים'} | "
+        f"Trainer file: {'נמצא' if TRAINER_AVAILABLE else 'לא נמצא'}"
+    )
+
+    b1, b2, b3 = st.columns([1.2, 1.2, 2])
+
+    with b1:
+        if st.button(
+            "🚀 התחל אימון אוטומטי",
+            type="primary",
+            use_container_width=True,
+            disabled=running or not TRAINER_AVAILABLE,
+        ):
+            try:
+                pid_started = start_trainer_process()
+                st.success(f"האימון התחיל ברקע. PID: {pid_started}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"לא ניתן להתחיל אימון: {e}")
+
+    with b2:
+        if st.button(
+            "⏹ עצור אימון",
+            type="secondary",
+            use_container_width=True,
+            disabled=not running,
+        ):
+            try:
+                ok = stop_trainer_process(grace_seconds=5)
+                if ok:
+                    st.warning("נשלחה בקשת עצירה לתהליך. הוא יקבל כמה שניות להיסגר בצורה מסודרת.")
+                else:
+                    st.info("לא נמצא תהליך רץ לעצירה.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"לא ניתן לעצור את האימון: {e}")
+
+    with b3:
+        st.info(
+            "האימון רץ כתהליך רקע נפרד. Streamlit יכול להתרענן בלי לקטוע את הריצה באמצע. "
+            "כפתור העצירה שולח בקשת עצירה רכה ואז מסיים בכוח רק אם צריך."
+        )
+
+    if status.get("state") in {"running", "stopping", "locked"}:
+        st.warning(f"סטטוס נוכחי: {status.get('message', 'לא ידוע')}")
+
+
 # ============================================================
 # ניווט
 # ============================================================
@@ -565,7 +578,12 @@ nav = [
 ]
 for col, (mode_key, label) in zip([c1, c2, c3, c4, c5, c6, c7, c8], nav):
     with col:
-        if st.button(label, use_container_width=True, type="primary" if st.session_state.mode == mode_key else "secondary", key=f"nav_{mode_key}"):
+        if st.button(
+            label,
+            use_container_width=True,
+            type="primary" if st.session_state.mode == mode_key else "secondary",
+            key=f"nav_{mode_key}",
+        ):
             st.session_state.mode = mode_key
             st.rerun()
 st.markdown("---")
@@ -576,10 +594,10 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
     rec_th = metadata.get("recommended_threshold", "לא חושב")
     tr_count = metadata.get("num_trades", "?")
     st.info(
-        f"🧠 **מצב AI מופעל:** {metadata.get('slot','כללי')} | "
+        f"🧠 **מצב AI מופעל:** {metadata.get('slot', 'כללי')} | "
         f"דיוק OOB אמיתי: {acc*100:.1f}% | "
         f"🎯 **ציון סף מומלץ לכניסה:** {rec_th} | "
-        f"מאומן על {tr_count} עסקאות היסטוריות | מקור טריינר: {TRAINER_SOURCE}"
+        f"מאומן על {tr_count} עסקאות היסטוריות"
     )
 
 # ============================================================
@@ -634,8 +652,11 @@ def screen_backtest():
         with st.spinner("מריץ..."):
             try:
                 bt_df, audit_df = run_wyckoff_anchored_backtest(
-                    ticker.upper(), st.session_state.use_ml, bt_threshold,
-                    period="2y", risk_profile=risk_profile,
+                    ticker.upper(),
+                    st.session_state.use_ml,
+                    bt_threshold,
+                    period="2y",
+                    risk_profile=risk_profile,
                 )
             except Exception as e:
                 st.error(f"שגיאה בהרצת הבק-טסט: {e}")
@@ -644,34 +665,32 @@ def screen_backtest():
                 st.error("שגיאה בנתונים.")
                 return
             t_count = len(audit_df)
-            w_rate = len(audit_df[audit_df['win'] == True]) / t_count if t_count > 0 else 0
-            s_ret = bt_df['Cum_Strategy'].iloc[-1]
+            w_rate = len(audit_df[audit_df["win"] == True]) / t_count if t_count > 0 else 0
+            s_ret = bt_df["Cum_Strategy"].iloc[-1]
             c_m1, c_m2, c_m3 = st.columns(3)
             c_m1.metric("מס' עסקאות", t_count)
             c_m2.metric("Win Rate", f"{w_rate:.1%}" if t_count > 0 else "N/A")
             c_m3.metric("תשואה", f"{s_ret:.2%}")
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Strategy'], name='Wyckoff Strategy', line=dict(color='#00ff00')))
-            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df['Cum_Baseline'], name='Baseline', line=dict(color='#888888', dash='dot')))
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df["Cum_Strategy"], name="Wyckoff Strategy"))
+            fig.add_trace(go.Scatter(x=bt_df.index, y=bt_df["Cum_Baseline"], name="Baseline", line=dict(dash="dot")))
             st.plotly_chart(fig, use_container_width=True)
             if not audit_df.empty:
                 st.markdown("### 📋 Audit Logs")
                 for _, row in audit_df.iterrows():
-                    cls = "win" if row['win'] else "loss"
-                    emoji = "✅" if row['win'] else "❌"
-                    st.markdown(f"""<div class="audit-row {cls}"><b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type','N/A')}</div>""", unsafe_allow_html=True)
+                    cls = "win" if row["win"] else "loss"
+                    emoji = "✅" if row["win"] else "❌"
+                    st.markdown(
+                        f"""<div class="audit-row {cls}"><b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>
+                        פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type','N/A')}</div>""",
+                        unsafe_allow_html=True,
+                    )
 
     st.markdown("---")
     st.markdown("### ⚙️ פעולות מערכת וניקוי תקלות")
     st.markdown("במידה והלמידה נתקעת או שהאפליקציה מתנהגת מוזר - הלחצן הזה ימחק קבצים זמניים, ינקה מטמון וירענן את העמוד מאפס.")
     if st.button("🚀 נקה קבצי סטטוס תקועים ואתחל מערכת (Hard Reboot)", use_container_width=True, type="primary"):
-        files_to_delete = [AUTO_TRAINER_STATUS_FILE, AUTO_TRAINER_DONE_FLAG, LOG_FILE_PATH]
-        for f in files_to_delete:
-            if os.path.exists(f):
-                try:
-                    os.remove(f)
-                except:
-                    pass
+        clear_trainer_artifacts()
         st.cache_data.clear()
         if hasattr(st, "cache_resource"):
             st.cache_resource.clear()
@@ -725,7 +744,11 @@ def screen_composite():
 
 
 def screen_monitor():
-    st.markdown("""<div class="header-box monitor"><h2>👁️ UNDER THE HOOD - Lab Monitor</h2><p>פיקוח בזמן אמת על מה שהמכונה לומדת, הנתונים שהיא צוברת והפקטורים שמניעים אותה.</p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="header-box monitor"><h2>👁️ UNDER THE HOOD - Lab Monitor</h2>
+    <p>פיקוח בזמן אמת על מה שהמכונה לומדת, הנתונים שהיא צוברת והפקטורים שמניעים אותה.</p>
+    </div>""", unsafe_allow_html=True)
+
+    render_trainer_control_panel()
 
     if not st.session_state.model_archive:
         st.warning("אין עדיין מודלים בספרייה. הרץ אימון ידני או אוטומטי קודם.")
@@ -739,8 +762,8 @@ def screen_monitor():
     csv_path = f"models/training_data_{safe_slot}.csv"
 
     model_data = st.session_state.model_archive[slot]
-    model = model_data['model']
-    meta = model_data['metadata']
+    model = model_data["model"]
+    meta = model_data["metadata"]
 
     df = pd.DataFrame()
     if os.path.exists(csv_path):
@@ -752,8 +775,8 @@ def screen_monitor():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("דיוק (OOB Score)", f"{meta.get('train_acc', 0)*100:.1f}%")
     c2.metric("סה\"כ עסקאות בבסיס הנתונים", len(df) if not df.empty else 0)
-    c3.metric("Threshold מומלץ לכניסה", meta.get('recommended_threshold', 50))
-    if not df.empty and 'label' in df.columns:
+    c3.metric("Threshold מומלץ לכניסה", meta.get("recommended_threshold", 50))
+    if not df.empty and "label" in df.columns:
         c4.metric("Win Rate היסטורי גולמי", f"{df['label'].mean()*100:.1f}%")
     else:
         c4.metric("Win Rate היסטורי גולמי", "N/A")
@@ -763,20 +786,40 @@ def screen_monitor():
 
     with col_a:
         st.markdown("### 🧬 מה המודל לומד? (Feature Importance)")
-        if hasattr(model, 'feature_importances_') and hasattr(model, 'feature_names_in_'):
-            fi_df = pd.DataFrame({'Feature': model.feature_names_in_, 'Importance': model.feature_importances_}).sort_values('Importance', ascending=True).tail(10)
-            fig = go.Figure(go.Bar(x=fi_df['Importance'], y=fi_df['Feature'], orientation='h', marker=dict(color='#26a69a')))
-            fig.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+        if hasattr(model, "feature_importances_") and hasattr(model, "feature_names_in_"):
+            fi_df = pd.DataFrame({
+                "Feature": model.feature_names_in_,
+                "Importance": model.feature_importances_,
+            }).sort_values("Importance", ascending=True).tail(10)
+            fig = go.Figure(go.Bar(
+                x=fi_df["Importance"],
+                y=fi_df["Feature"],
+                orientation="h",
+            ))
+            fig.update_layout(
+                margin=dict(l=0, r=0, t=30, b=0),
+                height=350,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("המודל לא מכיל מידע על חשיבות פקטורים.")
 
     with col_b:
         st.markdown("### 📊 התפלגות מניות בספרייה (Top 10)")
-        if not df.empty and 'ticker' in df.columns:
-            ticker_counts = df['ticker'].value_counts().head(10)
-            fig2 = go.Figure(go.Pie(labels=ticker_counts.index, values=ticker_counts.values, hole=0.4, marker=dict(colors=['#3498db','#9b59b6','#34495e','#16a085','#27ae60','#f1c40f','#e67e22','#e74c3c'])))
-            fig2.update_layout(margin=dict(l=0, r=0, t=30, b=0), height=350, paper_bgcolor='rgba(0,0,0,0)')
+        if not df.empty and "ticker" in df.columns:
+            ticker_counts = df["ticker"].value_counts().head(10)
+            fig2 = go.Figure(go.Pie(
+                labels=ticker_counts.index,
+                values=ticker_counts.values,
+                hole=0.4,
+            ))
+            fig2.update_layout(
+                margin=dict(l=0, r=0, t=30, b=0),
+                height=350,
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("אין מספיק נתונים.")
@@ -784,14 +827,24 @@ def screen_monitor():
     st.markdown("---")
     st.markdown("### 📈 התפלגות VIX ברגעי עסקאות")
     if not df.empty:
-        vix_col = 'f_macro_vix_zscore' if 'f_macro_vix_zscore' in df.columns else 'vix_close' if 'vix_close' in df.columns else None
+        vix_col = "f_macro_vix_zscore" if "f_macro_vix_zscore" in df.columns else "vix_close" if "vix_close" in df.columns else None
         if vix_col:
-            label_vix = 'VIX Z-Score' if vix_col == 'f_macro_vix_zscore' else 'VIX Close'
+            label_vix = "VIX Z-Score" if vix_col == "f_macro_vix_zscore" else "VIX Close"
             mean_vix = df[vix_col].mean()
             fig_vix = go.Figure()
             fig_vix.add_trace(go.Histogram(x=df[vix_col], nbinsx=25, name=label_vix, opacity=0.75))
-            fig_vix.add_vline(x=mean_vix, line_dash="dash", line_color="#ef5350", annotation_text=f"ממוצע: {mean_vix:.2f}", annotation_position="top right")
-            fig_vix.update_layout(height=350, margin=dict(l=0, r=0, t=40, b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            fig_vix.add_vline(
+                x=mean_vix,
+                line_dash="dash",
+                annotation_text=f"ממוצע: {mean_vix:.2f}",
+                annotation_position="top right",
+            )
+            fig_vix.update_layout(
+                height=350,
+                margin=dict(l=0, r=0, t=40, b=0),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
             st.plotly_chart(fig_vix, use_container_width=True)
         else:
             st.info("לא נמצאו נתוני VIX בקובץ האימון.")
@@ -799,16 +852,30 @@ def screen_monitor():
     st.markdown("---")
     st.markdown("### 🕒 עסקאות אחרונות שנסרקו")
     if not df.empty:
-        cols_ok = [c for c in ['entry_date', 'ticker', 'phase', 'label'] if c in df.columns]
-        show_df = df[cols_ok].sort_values('entry_date', ascending=False).head(15).copy()
-        if 'label' in show_df.columns:
-            show_df['label'] = show_df['label'].apply(lambda x: '✅ הצלחה' if x == 1 else '❌ כישלון')
-        show_df.rename(columns={'entry_date': 'תאריך כניסה', 'ticker': 'מניה', 'phase': 'פאזת Wyckoff', 'label': 'סטטוס קצה'}, inplace=True)
+        cols_ok = [c for c in ["entry_date", "ticker", "phase", "label"] if c in df.columns]
+        show_df = df[cols_ok].sort_values("entry_date", ascending=False).head(15).copy()
+        if "label" in show_df.columns:
+            show_df["label"] = show_df["label"].apply(lambda x: "✅ הצלחה" if x == 1 else "❌ כישלון")
+        show_df.rename(
+            columns={
+                "entry_date": "תאריך כניסה",
+                "ticker": "מניה",
+                "phase": "פאזת Wyckoff",
+                "label": "סטטוס קצה",
+            },
+            inplace=True,
+        )
         st.dataframe(show_df, use_container_width=True)
 
 
 def screen_ml_trainer():
-    st.markdown("""<div class="header-box ml"><h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2><p>מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי המלא נמצא למטה.</p></div>""", unsafe_allow_html=True)
+    st.markdown(
+        """<div class="header-box ml">
+        <h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
+        <p>מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי רץ ברקע עם כפתורי התחלה/עצירה.</p>
+    </div>""",
+        unsafe_allow_html=True,
+    )
 
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
 
@@ -832,7 +899,11 @@ def screen_ml_trainer():
 
     if st.button("🚀 התחל למידה רציפה (הוסף לספרייה)", use_container_width=True, type="primary"):
         with st.spinner("שואב עסקאות ומאמן מודל..."):
-            df = get_cached_data(train_ticker.upper(), start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
+            df = get_cached_data(
+                train_ticker.upper(),
+                start=start_date.strftime("%Y-%m-%d"),
+                end=end_date.strftime("%Y-%m-%d"),
+            )
             if df is None or len(df) < 60:
                 st.error("אין מספיק נתונים.")
                 return
@@ -840,8 +911,12 @@ def screen_ml_trainer():
             engine = FactorEngine(BacktestConfig())
             try:
                 bt_df, audit_df = run_wyckoff_anchored_backtest(
-                    train_ticker.upper(), use_ai=False, threshold=base_th, period=None,
-                    start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'),
+                    train_ticker.upper(),
+                    use_ai=False,
+                    threshold=base_th,
+                    period=None,
+                    start=start_date.strftime("%Y-%m-%d"),
+                    end=end_date.strftime("%Y-%m-%d"),
                     risk_profile=train_risk,
                 )
             except Exception as e:
@@ -854,17 +929,21 @@ def screen_ml_trainer():
 
             features_list = []
             for _, trade in audit_df.iterrows():
-                entry_dt = pd.Timestamp(trade['entry_date'])
+                entry_dt = pd.Timestamp(trade["entry_date"])
                 if entry_dt in bt_df.index:
-                    window_df = df.loc[:entry_dt].iloc[-200:] if len(df.loc[:entry_dt]) > 200 else df.loc[:entry_dt]
+                    window_df = (
+                        df.loc[:entry_dt].iloc[-200:]
+                        if len(df.loc[:entry_dt]) > 200
+                        else df.loc[:entry_dt]
+                    )
                     try:
                         factors = engine.compute(window_df)
                         if len(factors) > 0:
                             feature_row = factors.iloc[-1].to_dict()
-                            feature_row['phase'] = bt_df.loc[entry_dt]['wyckoff_phase']
-                            feature_row['label'] = 1 if trade['win'] else 0
-                            feature_row['ticker'] = train_ticker.upper()
-                            feature_row['entry_date'] = trade['entry_date']
+                            feature_row["phase"] = bt_df.loc[entry_dt]["wyckoff_phase"]
+                            feature_row["label"] = 1 if trade["win"] else 0
+                            feature_row["ticker"] = train_ticker.upper()
+                            feature_row["entry_date"] = trade["entry_date"]
                             features_list.append(feature_row)
                     except Exception:
                         continue
@@ -874,45 +953,66 @@ def screen_ml_trainer():
                 return
 
             new_df = pd.DataFrame(features_list)
-            os.makedirs("models", exist_ok=True)
+            os.makedirs(MODEL_DIR, exist_ok=True)
             safe_slot_name = clean_filename(str(target_slot))
-            history_path = f"models/training_data_{safe_slot_name}.csv"
+            history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
 
             if os.path.exists(history_path):
                 hist_df = pd.read_csv(history_path)
-                combined_df = pd.concat([hist_df, new_df], ignore_index=True).drop_duplicates(subset=['ticker', 'entry_date'], keep='last')
+                combined_df = (
+                    pd.concat([hist_df, new_df], ignore_index=True)
+                    .drop_duplicates(subset=["ticker", "entry_date"], keep="last")
+                )
             else:
                 combined_df = new_df
 
             combined_df.to_csv(history_path, index=False)
 
-            if combined_df['label'].nunique() < 2:
+            if combined_df["label"].nunique() < 2:
                 st.error("צריך לפחות שתי מחלקות שונות לאימון מודל.")
                 return
 
-            y = combined_df['label'].values
+            y = combined_df["label"].values
             le = LabelEncoder()
-            phase_encoded = le.fit_transform(combined_df['phase'].fillna("לא בתהליך איסוף"))
-            phase_dummies = pd.get_dummies(phase_encoded, prefix='phase').astype(int)
-            drop_cols = ['phase', 'label', 'ticker', 'entry_date']
-            tech_factors = combined_df.drop(columns=[c for c in drop_cols if c in combined_df.columns]).select_dtypes(include=[np.number])
-            X = pd.concat([tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)], axis=1).replace([np.inf, -np.inf], np.nan).fillna(0)
+            phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
+            phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
+            drop_cols = ["phase", "label", "ticker", "entry_date"]
+            tech_factors = (
+                combined_df
+                .drop(columns=[c for c in drop_cols if c in combined_df.columns])
+                .select_dtypes(include=[np.number])
+            )
+            X = (
+                pd.concat(
+                    [tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)],
+                    axis=1,
+                )
+                .replace([np.inf, -np.inf], np.nan)
+                .fillna(0)
+            )
 
             model = RandomForestClassifier(
-                n_estimators=100, max_depth=3, min_samples_leaf=3,
-                oob_score=True, random_state=42, n_jobs=-1,
+                n_estimators=100,
+                max_depth=3,
+                min_samples_leaf=3,
+                oob_score=True,
+                random_state=42,
+                n_jobs=-1,
             )
             model.fit(X, y)
             try:
                 train_acc = model.oob_score_
-            except:
+            except Exception:
                 train_acc = model.score(X, y)
 
             optimal_th = calculate_optimal_threshold(model, X, y)
             meta = {
-                "train_ticker": "MANUAL_ADDITION", "train_acc": train_acc,
-                "test_acc": train_acc, "slot": target_slot,
-                "model_type": "Wyckoff-Anchored", "num_trades": len(combined_df),
+                "train_ticker": "MANUAL_ADDITION",
+                "train_acc": train_acc,
+                "test_acc": train_acc,
+                "slot": target_slot,
+                "model_type": "Wyckoff-Anchored",
+                "num_trades": len(combined_df),
                 "recommended_threshold": optimal_th,
             }
             save_path = save_model_to_disk(target_slot, model, meta, le)
@@ -928,37 +1028,17 @@ def screen_ml_trainer():
             c_r3.metric("🎯 Threshold מומלץ", optimal_th)
 
     st.markdown("---")
-    st.markdown("### 🚦 Auto-Trainer Status")
-    status = read_auto_trainer_status()
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("מצב", status.get("state", "idle"))
-    s2.metric("התקדמות", f"{status.get('progress', 0)}%")
-    s3.metric("סקטור נוכחי", status.get("current_slot", "N/A"))
-    s4.metric("עודכן", status.get("updated_at", "N/A"))
+    render_trainer_control_panel()
 
     st.markdown("---")
-    st.markdown("### 🚀 אימון אוטומטי מלא (כל הסקטורים)")
-
-    if st.button("🚀 הזנק אימון אוטומטי מלא", type="primary", use_container_width=True):
-        with st.spinner("האימון רץ... אל תרענן את הדף."):
-            try:
-                run_auto_trainer()
-                st.success("✅ האימון האוטומטי הושלם בהצלחה!")
-                st.session_state.model_archive = load_all_models_from_disk()
-                time.sleep(1)
-                st.rerun()
-            except Exception:
-                st.error("❌ האימון נכשל. הנה השגיאה המדויקת:")
-                st.code(traceback.format_exc(), language="text")
-
     with st.expander("📝 יומן ריצה ושגיאות", expanded=False):
-        if os.path.exists(LOG_FILE_PATH):
+        if os.path.exists(AUTO_TRAINER_LOG_FILE):
             try:
-                with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
+                with open(AUTO_TRAINER_LOG_FILE, "r", encoding="utf-8") as f:
                     logs = f.read()
                 st.text_area("היומן המלא:", logs[-5000:], height=300)
                 if st.button("🗑️ נקה יומן"):
-                    open(LOG_FILE_PATH, 'w').close()
+                    open(AUTO_TRAINER_LOG_FILE, "w").close()
                     st.rerun()
             except Exception as e:
                 st.warning(f"לא ניתן לקרוא את קובץ הלוג: {e}")
