@@ -2,6 +2,7 @@
 # INSTITUTIONAL SCOUT PRO - FINAL UI V10.16
 # Safe Subprocess Background Auto-Trainer Control
 # ============================================================
+
 import sys
 import os
 import json
@@ -21,6 +22,7 @@ from sklearn.preprocessing import LabelEncoder
 import streamlit as st
 import plotly.graph_objects as go
 
+# ── נתיב בסיס מוחלט ───────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
@@ -42,27 +44,32 @@ from scout_core import (
 # ============================================================
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 
-# ציד אגרסיבי אחרי הקובץ trainer_core.py
 def _hunt_for_trainer():
-    candidates = [
-        os.path.join(BASE_DIR, "trainer_core.py"),
-        os.path.join(os.getcwd(), "trainer_core.py"),
-        os.path.join(os.path.dirname(BASE_DIR), "trainer_core.py"),
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-    return os.path.join(BASE_DIR, "trainer_core.py") # Fallback
+    """מחזיר את הנתיב המוחלט לקובץ trainer_core.py - מחפש קודם בתיקיית האפליקציה."""
+    # המיקום הצפוי: באותה תיקייה של app.py
+    primary = os.path.join(BASE_DIR, "trainer_core.py")
+    if os.path.isfile(primary):
+        return primary
+    # נסה תיקיית העבודה
+    cwd_candidate = os.path.join(os.getcwd(), "trainer_core.py")
+    if os.path.isfile(cwd_candidate):
+        return cwd_candidate
+    # נסה תיקיית הורה
+    parent_candidate = os.path.join(os.path.dirname(BASE_DIR), "trainer_core.py")
+    if os.path.isfile(parent_candidate):
+        return parent_candidate
+    # fallback - מחזיר את הנתיב הראשי, גם אם הקובץ לא קיים (לצורך הודעת שגיאה)
+    return primary
 
 TRAINER_SCRIPT = _hunt_for_trainer()
-TRAINER_AVAILABLE = os.path.exists(TRAINER_SCRIPT)
+TRAINER_AVAILABLE = os.path.isfile(TRAINER_SCRIPT)
 
 AUTO_TRAINER_STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
-AUTO_TRAINER_DONE_FLAG   = os.path.join(MODEL_DIR, "auto_trainer.done")
-AUTO_TRAINER_LOG_FILE    = os.path.join(BASE_DIR, "auto_trainer_error.log")
-AUTO_TRAINER_PID_FILE    = os.path.join(MODEL_DIR, "auto_trainer.pid")
-AUTO_TRAINER_STOP_FILE   = os.path.join(MODEL_DIR, "auto_trainer.stop")
-AUTO_TRAINER_LOCK_FILE   = os.path.join(MODEL_DIR, "auto_trainer.lock")
+AUTO_TRAINER_DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
+AUTO_TRAINER_LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
+AUTO_TRAINER_PID_FILE = os.path.join(MODEL_DIR, "auto_trainer.pid")
+AUTO_TRAINER_STOP_FILE = os.path.join(MODEL_DIR, "auto_trainer.stop")
+AUTO_TRAINER_LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
 
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
@@ -76,7 +83,6 @@ def save_model_to_disk(slot_name, model, metadata, encoder):
     with open(file_path, "wb") as f:
         pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f)
     return file_path
-
 
 def load_all_models_from_disk():
     loaded = {}
@@ -93,7 +99,6 @@ def load_all_models_from_disk():
                     pass
     return loaded
 
-
 def load_all_research_dfs_from_disk():
     archive = {}
     if os.path.exists("research_labels"):
@@ -108,7 +113,6 @@ def load_all_research_dfs_from_disk():
                     pass
     return archive
 
-
 def read_auto_trainer_status():
     default = {
         "state": "idle",
@@ -120,7 +124,6 @@ def read_auto_trainer_status():
         "finished_at": "N/A",
         "pid": "N/A",
     }
-
     if os.path.exists(AUTO_TRAINER_STATUS_FILE):
         try:
             with open(AUTO_TRAINER_STATUS_FILE, "r", encoding="utf-8") as f:
@@ -129,9 +132,7 @@ def read_auto_trainer_status():
             pass
     elif os.path.exists(AUTO_TRAINER_DONE_FLAG):
         default.update({"state": "completed", "message": "האימון הסתיים", "progress": 100})
-
     return default
-
 
 def _is_pid_running(pid):
     if pid is None:
@@ -140,21 +141,18 @@ def _is_pid_running(pid):
         pid = int(pid)
     except Exception:
         return False
-
     if pid <= 0:
         return False
-
     try:
         os.kill(pid, 0)
         return True
     except Exception:
         return False
 
-
 def read_trainer_pid():
+    """קורא את ה-PID מהקובץ, ומוודא שהתהליך עדיין רץ. מחזיר None אם לא."""
     if not os.path.exists(AUTO_TRAINER_PID_FILE):
         return None
-
     try:
         with open(AUTO_TRAINER_PID_FILE, "r", encoding="utf-8") as f:
             raw = f.read().strip()
@@ -165,22 +163,27 @@ def read_trainer_pid():
         except Exception:
             pass
         return None
-
     if _is_pid_running(pid):
         return pid
-
+    # PID לא רץ – נקה את הקובץ
     try:
         os.remove(AUTO_TRAINER_PID_FILE)
     except Exception:
         pass
     return None
 
-
 def write_trainer_pid(pid):
+    """כותב PID לקובץ בצורה אטומית (כתיבה לקובץ זמני ואז rename)."""
     os.makedirs(MODEL_DIR, exist_ok=True)
-    with open(AUTO_TRAINER_PID_FILE, "w", encoding="utf-8") as f:
-        f.write(str(int(pid)))
-
+    tmp_file = AUTO_TRAINER_PID_FILE + ".tmp"
+    try:
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            f.write(str(int(pid)))
+        os.replace(tmp_file, AUTO_TRAINER_PID_FILE)  # פעולה אטומית במערכת הקבצים
+    except Exception:
+        # fallback
+        with open(AUTO_TRAINER_PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(int(pid)))
 
 def clear_stop_request():
     if os.path.exists(AUTO_TRAINER_STOP_FILE):
@@ -188,7 +191,6 @@ def clear_stop_request():
             os.remove(AUTO_TRAINER_STOP_FILE)
         except Exception:
             pass
-
 
 def write_stop_request():
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -199,27 +201,21 @@ def write_stop_request():
     with open(AUTO_TRAINER_STOP_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-
 def cleanup_stale_trainer_artifacts():
+    """מנקה קבצי PID, STOP, LOCK תקועים אם התהליך לא רץ."""
     pid = read_trainer_pid()
-    is_running = False
-    
-    if pid is not None:
-        is_running = _is_pid_running(pid)
-        if not is_running:
-            try:
-                os.remove(AUTO_TRAINER_PID_FILE)
-            except Exception:
-                pass
+    is_running = pid is not None  # read_trainer_pid כבר בדק ומחק אם לא רץ
 
+    # מחק STOP_FILE אם התהליך לא רץ
     if not is_running and os.path.exists(AUTO_TRAINER_STOP_FILE):
         try:
             os.remove(AUTO_TRAINER_STOP_FILE)
         except Exception:
             pass
 
-    status = read_auto_trainer_status()
+    # טפל ב-LOCK_FILE
     if os.path.exists(AUTO_TRAINER_LOCK_FILE):
+        status = read_auto_trainer_status()
         if not is_running and status.get("state") in {"running", "stopping"}:
             try:
                 os.remove(AUTO_TRAINER_LOCK_FILE)
@@ -228,11 +224,10 @@ def cleanup_stale_trainer_artifacts():
         else:
             try:
                 age = time.time() - os.path.getmtime(AUTO_TRAINER_LOCK_FILE)
-                if age > 6 * 60 * 60:
+                if age > 6 * 3600:  # 6 שעות
                     os.remove(AUTO_TRAINER_LOCK_FILE)
             except Exception:
                 pass
-
 
 def is_trainer_running():
     cleanup_stale_trainer_artifacts()
@@ -241,10 +236,9 @@ def is_trainer_running():
     lock_exists = os.path.exists(AUTO_TRAINER_LOCK_FILE)
     return (
         status.get("state") in {"running", "locked", "stopping"}
-        or (pid is not None and _is_pid_running(pid))
+        or pid is not None
         or lock_exists
     )
-
 
 def _send_sigterm(pid):
     try:
@@ -260,7 +254,6 @@ def _send_sigterm(pid):
     except Exception:
         pass
 
-
 def _send_sigkill(pid):
     try:
         if os.name == "nt":
@@ -275,11 +268,12 @@ def _send_sigkill(pid):
     except Exception:
         pass
 
-
 def start_trainer_process():
+    """מפעיל את trainer_core.py כתהליך נפרד. מחזיר PID."""
     if not TRAINER_AVAILABLE:
         raise FileNotFoundError(
-            f"קובץ trainer_core.py לא נמצא בנתיב: {TRAINER_SCRIPT}"
+            f"קובץ trainer_core.py לא נמצא בנתיב: {TRAINER_SCRIPT}\n"
+            f"אנא וודא שהקובץ נמצא באותה תיקייה של app.py ({BASE_DIR})."
         )
 
     if is_trainer_running():
@@ -291,55 +285,43 @@ def start_trainer_process():
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
+    # נפתח את קובץ הלוג לצורך ניתוב הפלט של התהליך
     log_handle = open(AUTO_TRAINER_LOG_FILE, "a", encoding="utf-8")
-
     try:
         kwargs = {
-            "cwd": BASE_DIR,
+            "cwd": BASE_DIR,                       # תקיית העבודה תהיה תיקיית האפליקציה
             "stdout": log_handle,
             "stderr": subprocess.STDOUT,
             "env": env,
         }
-
         if os.name == "nt":
+            # CREATE_NEW_PROCESS_GROUP מאפשר שליחת Ctrl+Break וכו'
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             kwargs["start_new_session"] = True
 
         proc = subprocess.Popen([sys.executable, TRAINER_SCRIPT], **kwargs)
         write_trainer_pid(proc.pid)
-
         return proc.pid
     finally:
+        # סגירת ה-file handle של האב אינה פוגעת בתהליך הבן
         try:
             log_handle.close()
         except Exception:
             pass
 
-
 def stop_trainer_process(grace_seconds=5):
+    """עוצר את תהליך האימון: קודם SIGTERM, ואז SIGKILL אם לא נסגר."""
     pid = read_trainer_pid()
     write_stop_request()
 
     if pid is None:
-        status = read_auto_trainer_status()
-        if status.get("state") not in {"running", "stopping"}:
-            return False
+        # אולי התהליך כבר מת, ננקה שאריות
+        cleanup_stale_trainer_artifacts()
         return True
 
-    try:
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        stop_payload = {
-            "requested_at": datetime.now().isoformat(timespec="seconds"),
-            "pid": pid,
-        }
-        with open(AUTO_TRAINER_STOP_FILE, "w", encoding="utf-8") as f:
-            json.dump(stop_payload, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
+    # שליחת SIGTERM (או taskkill רך ב-Windows)
     _send_sigterm(pid)
-
     deadline = time.time() + float(grace_seconds)
     while time.time() < deadline:
         if not _is_pid_running(pid):
@@ -348,15 +330,16 @@ def stop_trainer_process(grace_seconds=5):
 
     if _is_pid_running(pid):
         _send_sigkill(pid)
+        time.sleep(0.5)
 
+    # נקה קבצים
     try:
         if os.path.exists(AUTO_TRAINER_PID_FILE):
             os.remove(AUTO_TRAINER_PID_FILE)
     except Exception:
         pass
-
+    cleanup_stale_trainer_artifacts()
     return True
-
 
 def clear_trainer_artifacts():
     files_to_delete = [
@@ -373,7 +356,6 @@ def clear_trainer_artifacts():
                 os.remove(f)
             except Exception:
                 pass
-
 
 # ============================================================
 # Universe
@@ -430,20 +412,71 @@ SECTOR_MAP = {
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Hebrew:wght@300;400;600&display=swap');
-html, body, [class*="css"] { font-family: 'IBM Plex Sans Hebrew', sans-serif; direction: rtl; text-align: right; box-sizing: border-box; }
-h1, h2, h3, h4, h5, h6 { direction: rtl; }
-.header-box { border-radius: 12px; padding: 24px 32px; margin-bottom: 28px; color: #e0eaf4; line-height: 1.9; }
-.header-box.wyckoff   { background: linear-gradient(135deg, #0f1923, #1a2a3a); border: 1px solid #2a4a6a; }
-.header-box.vp        { background: linear-gradient(135deg, #160f23, #251535); border: 1px solid #4a2a6a; }
-.header-box.vwap      { background: linear-gradient(135deg, #0f2318, #1a3528); border: 1px solid #2a6a4a; }
-.header-box.composite { background: linear-gradient(135deg, #1a1208, #2a1e08); border: 1px solid #6a4a1a; }
-.header-box.ml        { background: linear-gradient(135deg, #1c0a20, #2e1236); border: 1px solid #7b1fa2; }
-.header-box.scanner   { background: linear-gradient(135deg, #0f231f, #1a3a35); border: 1px solid #26a69a; }
-.header-box.monitor   { background: linear-gradient(135deg, #2c3e50, #34495e); border: 1px solid #7f8c8d; }
-.widget-panel-ai { background: #111922; border: 1px solid #2d3d4f; border-radius: 10px; padding: 20px; margin-bottom: 24px; }
-.audit-row { padding: 12px; margin-bottom: 8px; border-radius: 5px; border-right: 4px solid; }
-.win  { background: rgba(38, 166, 154, 0.1); border-color: #26a69a; }
-.loss { background: rgba(239, 83, 80, 0.1);  border-color: #ef5350; }
+html, body, [class*="css"] {
+    font-family: 'IBM Plex Sans Hebrew', sans-serif;
+    direction: rtl;
+    text-align: right;
+    box-sizing: border-box;
+}
+h1, h2, h3, h4, h5, h6 {
+    direction: rtl;
+}
+.header-box {
+    border-radius: 12px;
+    padding: 24px 32px;
+    margin-bottom: 28px;
+    color: #e0eaf4;
+    line-height: 1.9;
+}
+.header-box.wyckoff {
+    background: linear-gradient(135deg, #0f1923, #1a2a3a);
+    border: 1px solid #2a4a6a;
+}
+.header-box.vp {
+    background: linear-gradient(135deg, #160f23, #251535);
+    border: 1px solid #4a2a6a;
+}
+.header-box.vwap {
+    background: linear-gradient(135deg, #0f2318, #1a3528);
+    border: 1px solid #2a6a4a;
+}
+.header-box.composite {
+    background: linear-gradient(135deg, #1a1208, #2a1e08);
+    border: 1px solid #6a4a1a;
+}
+.header-box.ml {
+    background: linear-gradient(135deg, #1c0a20, #2e1236);
+    border: 1px solid #7b1fa2;
+}
+.header-box.scanner {
+    background: linear-gradient(135deg, #0f231f, #1a3a35);
+    border: 1px solid #26a69a;
+}
+.header-box.monitor {
+    background: linear-gradient(135deg, #2c3e50, #34495e);
+    border: 1px solid #7f8c8d;
+}
+.widget-panel-ai {
+    background: #111922;
+    border: 1px solid #2d3d4f;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 24px;
+}
+.audit-row {
+    padding: 12px;
+    margin-bottom: 8px;
+    border-radius: 5px;
+    border-right: 4px solid;
+}
+.win {
+    background: rgba(38, 166, 154, 0.1);
+    border-color: #26a69a;
+}
+.loss {
+    background: rgba(239, 83, 80, 0.1);
+    border-color: #ef5350;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -471,12 +504,12 @@ def get_cached_data(ticker, period="1y", start=None, end=None):
 # ============================================================
 # Session State
 # ============================================================
-if "mode"             not in st.session_state: st.session_state.mode             = "wyckoff"
-if "ml_model"         not in st.session_state: st.session_state.ml_model         = None
-if "ml_metadata"      not in st.session_state: st.session_state.ml_metadata      = None
-if "use_ml"           not in st.session_state: st.session_state.use_ml           = False
-if "phase_encoder"    not in st.session_state: st.session_state.phase_encoder    = None
-if "model_archive"    not in st.session_state: st.session_state.model_archive    = load_all_models_from_disk()
+if "mode" not in st.session_state: st.session_state.mode = "wyckoff"
+if "ml_model" not in st.session_state: st.session_state.ml_model = None
+if "ml_metadata" not in st.session_state: st.session_state.ml_metadata = None
+if "use_ml" not in st.session_state: st.session_state.use_ml = False
+if "phase_encoder" not in st.session_state: st.session_state.phase_encoder = None
+if "model_archive" not in st.session_state: st.session_state.model_archive = load_all_models_from_disk()
 if "research_archive" not in st.session_state: st.session_state.research_archive = load_all_research_dfs_from_disk()
 
 # ============================================================
@@ -485,14 +518,13 @@ if "research_archive" not in st.session_state: st.session_state.research_archive
 def render_threshold_control(label, key):
     if key not in st.session_state:
         st.session_state[key] = 65
-    st.markdown(f"**{label}**")
+    st.markdown(f"{label}")
     col1, col2 = st.columns([4, 1])
     with col1:
         st.session_state[key] = st.slider("", 40, 95, st.session_state[key], key=f"{key}_slider", label_visibility="collapsed")
     with col2:
         st.number_input("", 40, 95, st.session_state[key], key=f"{key}_num", label_visibility="collapsed")
     return st.session_state[key]
-
 
 def render_active_ai_selector_widget(screen_identifier):
     st.markdown("<div class='widget-panel-ai'>", unsafe_allow_html=True)
@@ -513,22 +545,21 @@ def render_active_ai_selector_widget(screen_identifier):
         else:
             st.info("לא נמצאו מודלים בזיכרון. הרץ אימון ידני או אוטומטי.")
     with col_b:
-        st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 רענן מודלים מהדיסק", key=f"sync_git_{screen_identifier}", use_container_width=True):
             st.session_state.model_archive = load_all_models_from_disk()
             st.rerun()
     with col_c:
-        st.markdown("<div style='margin-top:32px;'></div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         ai_toggle = st.checkbox("הפעל שימוש ב-AI", value=st.session_state.use_ml, key=f"checkbox_ai_{screen_identifier}")
         if ai_toggle != st.session_state.use_ml:
             st.session_state.use_ml = ai_toggle
             st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-
 def render_trainer_control_panel():
     cleanup_stale_trainer_artifacts()
-    
+
     status = read_auto_trainer_status()
     pid = read_trainer_pid()
     running = is_trainer_running()
@@ -541,7 +572,6 @@ def render_trainer_control_panel():
     c2.metric("התקדמות", f"{status.get('progress', 0)}%")
     c3.metric("PID", str(pid) if pid is not None else str(status.get("pid", "N/A")))
     c4.metric("סקטור נוכחי", status.get("current_slot", "N/A"))
-
     st.caption(
         f"Lock: {'קיים' if lock_exists else 'לא קיים'} | "
         f"Stop request: {'קיים' if stop_exists else 'לא קיים'} | "
@@ -549,7 +579,6 @@ def render_trainer_control_panel():
     )
 
     b1, b2, b3 = st.columns([1.2, 1.2, 2])
-
     with b1:
         if st.button(
             "🚀 התחל אימון אוטומטי",
@@ -563,7 +592,6 @@ def render_trainer_control_panel():
                 st.rerun()
             except Exception as e:
                 st.error(f"לא ניתן להתחיל אימון: {e}")
-
     with b2:
         if st.button(
             "⏹ עצור אימון",
@@ -580,7 +608,6 @@ def render_trainer_control_panel():
                 st.rerun()
             except Exception as e:
                 st.error(f"לא ניתן לעצור את האימון: {e}")
-
     with b3:
         st.info(
             "האימון רץ כתהליך רקע נפרד. Streamlit יכול להתרענן בלי לקטוע את הריצה באמצע. "
@@ -589,7 +616,6 @@ def render_trainer_control_panel():
 
     if status.get("state") in {"running", "stopping", "locked"}:
         st.warning(f"סטטוס נוכחי: {status.get('message', 'לא ידוע')}")
-
 
 # ============================================================
 # ניווט
@@ -624,9 +650,9 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
     rec_th = metadata.get("recommended_threshold", "לא חושב")
     tr_count = metadata.get("num_trades", "?")
     st.info(
-        f"🧠 **מצב AI מופעל:** {metadata.get('slot', 'כללי')} | "
+        f"🧠 מצב AI מופעל: {metadata.get('slot', 'כללי')} | "
         f"דיוק OOB אמיתי: {acc*100:.1f}% | "
-        f"🎯 **ציון סף מומלץ לכניסה:** {rec_th} | "
+        f"🎯 ציון סף מומלץ לכניסה: {rec_th} | "
         f"מאומן על {tr_count} עסקאות היסטוריות"
     )
 
@@ -634,13 +660,18 @@ if st.session_state.use_ml and st.session_state.ml_model is not None:
 # מסכים
 # ============================================================
 def screen_wyckoff():
-    st.markdown("""<div class="header-box wyckoff"><h2>⬛ WYCKOFF 3.0 STRUCTURAL ENGINE</h2></div>""", unsafe_allow_html=True)
+    st.markdown("""
+    <div class='header-box wyckoff'>
+        <h2 style='margin:0; color:#e0eaf4;'>⬛ WYCKOFF 3.0 STRUCTURAL ENGINE</h2>
+        <p style='opacity:0.85;'>ניתוח מבני מבוסס Wyckoff על ידי FactorEngine</p>
+    </div>
+    """, unsafe_allow_html=True)
     render_active_ai_selector_widget("wyckoff_screen")
     c1, c2 = st.columns([4, 1])
     with c1:
         ticker = st.text_input("סמל לניתוח:", "NVDA", key="w_ticker")
     with c2:
-        st.markdown("<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
         btn = st.button("▶ הרץ ניתוח", use_container_width=True, type="primary")
     if btn:
         with st.spinner("מנתח דרך FactorEngine..."):
@@ -658,16 +689,20 @@ def screen_wyckoff():
                     return
                 current_phase = phase_series.iloc[-1] if hasattr(phase_series, "iloc") else phase_series
                 current_cis = float(cis_series.iloc[-1]) if hasattr(cis_series, "iloc") else float(cis_series)
-                st.markdown(f"### 📌 סטטוס: **{current_phase}**")
+                st.markdown(f"### 📌 סטטוס: {current_phase}")
                 st.metric("Composite CIS", f"{current_cis:.1f}")
                 if st.session_state.use_ml and st.session_state.ml_model is not None:
                     st.info("ניתוח ה-Wyckoff מבוצע ישירות דרך FactorEngine. מודל ה-AI פעיל בשאר המסכים.")
             except Exception as e:
                 st.error(f"שגיאה בחישוב המנוע: {e}")
 
-
 def screen_backtest():
-    st.markdown("""<div class="header-box composite"><h2>📊 WYCKOFF-ANCHORED BACKTEST ENGINE</h2></div>""", unsafe_allow_html=True)
+    st.markdown("""
+    <div class='header-box backtest'>
+        <h2 style='margin:0; color:#e0eaf4;'>📊 WYCKOFF-ANCHORED BACKTEST ENGINE</h2>
+        <p style='opacity:0.85;'>הרצת סימולציה היסטורית עם Wyckoff-Anchored Threshold</p>
+    </div>
+    """, unsafe_allow_html=True)
     render_active_ai_selector_widget("bt_screen")
     col_r1, _ = st.columns([1, 2])
     with col_r1:
@@ -711,8 +746,12 @@ def screen_backtest():
                     cls = "win" if row["win"] else "loss"
                     emoji = "✅" if row["win"] else "❌"
                     st.markdown(
-                        f"""<div class="audit-row {cls}"><b>{emoji} {row['entry_date']} → {row['exit_date']}</b><br>
-                        פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type','N/A')}</div>""",
+                        f"""
+                        <div class='audit-row {cls}'>
+                        {emoji} {row['entry_date']} → {row['exit_date']}<br>
+                        פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type','N/A')}
+                        </div>
+                        """,
                         unsafe_allow_html=True,
                     )
 
@@ -727,9 +766,13 @@ def screen_backtest():
         st.session_state.clear()
         st.components.v1.html("<script>window.parent.location.reload(true);</script>", height=0)
 
-
 def screen_scanner():
-    st.markdown("""<div class="header-box scanner"><h2>🔎 MARKET SCANNER</h2></div>""", unsafe_allow_html=True)
+    st.markdown("""
+    <div class='header-box scanner'>
+        <h2 style='margin:0; color:#e0eaf4;'>🔎 MARKET SCANNER</h2>
+        <p style='opacity:0.85;'>סריקת שוק מהירה לאיתור מניות מעל רף הציון</p>
+    </div>
+    """, unsafe_allow_html=True)
     render_active_ai_selector_widget("scan_screen")
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -760,24 +803,39 @@ def screen_scanner():
         else:
             st.warning(f"אף מניה לא חצתה את רף הציון של {scan_th}.")
 
-
 def screen_vp():
-    st.markdown("""<div class="header-box vp"><h2>🔮 VOLUME PROFILE</h2></div>""", unsafe_allow_html=True)
-
+    st.markdown("""
+    <div class='header-box vp'>
+        <h2 style='margin:0; color:#e0eaf4;'>🔮 VOLUME PROFILE</h2>
+        <p style='opacity:0.85;'>ניתוח ווליום פרופיל (בפיתוח)</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 def screen_vwap():
-    st.markdown("""<div class="header-box vwap"><h2>📊 VWAP DEVIATION</h2></div>""", unsafe_allow_html=True)
-
+    st.markdown("""
+    <div class='header-box vwap'>
+        <h2 style='margin:0; color:#e0eaf4;'>📊 VWAP DEVIATION</h2>
+        <p style='opacity:0.85;'>סטיות VWAP (בפיתוח)</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 def screen_composite():
-    st.markdown("""<div class="header-box composite"><h2>📈 COMPOSITE SCORE</h2></div>""", unsafe_allow_html=True)
-
+    st.markdown("""
+    <div class='header-box composite'>
+        <h2 style='margin:0; color:#e0eaf4;'>📈 COMPOSITE SCORE</h2>
+        <p style='opacity:0.85;'>ציון Composite מתקדם (בפיתוח)</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 def screen_monitor():
-    st.markdown("""<div class="header-box monitor"><h2>👁️ UNDER THE HOOD - Lab Monitor</h2>
-    <p>פיקוח בזמן אמת על מה שהמכונה לומדת, הנתונים שהיא צוברת והפקטורים שמניעים אותה.</p>
-    </div>""", unsafe_allow_html=True)
-
+    st.markdown("""
+    <div class='header-box monitor'>
+        <h2 style='margin:0; color:#e0eaf4;'>👁️ UNDER THE HOOD - Lab Monitor</h2>
+        <p style='opacity:0.85;'>
+        פיקוח בזמן אמת על מה שהמכונה לומדת, הנתונים שהיא צוברת והפקטורים שמניעים אותה.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     render_trainer_control_panel()
 
     if not st.session_state.model_archive:
@@ -790,11 +848,9 @@ def screen_monitor():
     slot = st.selectbox("בחר סקטור למעקב:", list(st.session_state.model_archive.keys()))
     safe_slot = clean_filename(str(slot))
     csv_path = f"models/training_data_{safe_slot}.csv"
-
     model_data = st.session_state.model_archive[slot]
     model = model_data["model"]
     meta = model_data["metadata"]
-
     df = pd.DataFrame()
     if os.path.exists(csv_path):
         try:
@@ -810,10 +866,8 @@ def screen_monitor():
         c4.metric("Win Rate היסטורי גולמי", f"{df['label'].mean()*100:.1f}%")
     else:
         c4.metric("Win Rate היסטורי גולמי", "N/A")
-
     st.markdown("---")
     col_a, col_b = st.columns(2)
-
     with col_a:
         st.markdown("### 🧬 מה המודל לומד? (Feature Importance)")
         if hasattr(model, "feature_importances_") and hasattr(model, "feature_names_in_"):
@@ -835,7 +889,6 @@ def screen_monitor():
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("המודל לא מכיל מידע על חשיבות פקטורים.")
-
     with col_b:
         st.markdown("### 📊 התפלגות מניות בספרייה (Top 10)")
         if not df.empty and "ticker" in df.columns:
@@ -853,7 +906,6 @@ def screen_monitor():
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("אין מספיק נתונים.")
-
     st.markdown("---")
     st.markdown("### 📈 התפלגות VIX ברגעי עסקאות")
     if not df.empty:
@@ -878,7 +930,6 @@ def screen_monitor():
             st.plotly_chart(fig_vix, use_container_width=True)
         else:
             st.info("לא נמצאו נתוני VIX בקובץ האימון.")
-
     st.markdown("---")
     st.markdown("### 🕒 עסקאות אחרונות שנסרקו")
     if not df.empty:
@@ -897,18 +948,19 @@ def screen_monitor():
         )
         st.dataframe(show_df, use_container_width=True)
 
-
 def screen_ml_trainer():
     st.markdown(
-        """<div class="header-box ml">
-        <h2>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
-        <p>מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי רץ ברקע עם כפתורי התחלה/עצירה.</p>
-    </div>""",
+        """
+        <div class='header-box ml'>
+            <h2 style='margin:0; color:#e0eaf4;'>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
+            <p style='opacity:0.85;'>
+            מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי רץ ברקע עם כפתורי התחלה/עצירה.
+            </p>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
-
     MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
-
     st.markdown("### 🔬 אימון ידני בודד")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -917,7 +969,6 @@ def screen_ml_trainer():
         target_slot = st.selectbox("משבצת אסטרטגית:", MODEL_SLOTS)
     with c3:
         train_risk = st.selectbox("רמת סיכון:", ["Aggressive", "Balanced", "Conservative"])
-
     c4, c5, c6 = st.columns(3)
     with c4:
         start_date = st.date_input("מתאריך:", value=datetime(2020, 1, 1))
@@ -926,7 +977,6 @@ def screen_ml_trainer():
     with c6:
         render_threshold_control("סף כניסה בסיסי:", "base_threshold")
         base_th = st.session_state["base_threshold"]
-
     if st.button("🚀 התחל למידה רציפה (הוסף לספרייה)", use_container_width=True, type="primary"):
         with st.spinner("שואב עסקאות ומאמן מודל..."):
             df = get_cached_data(
@@ -937,7 +987,6 @@ def screen_ml_trainer():
             if df is None or len(df) < 60:
                 st.error("אין מספיק נתונים.")
                 return
-
             engine = FactorEngine(BacktestConfig())
             try:
                 bt_df, audit_df = run_wyckoff_anchored_backtest(
@@ -952,11 +1001,9 @@ def screen_ml_trainer():
             except Exception as e:
                 st.error(f"שגיאה בבק-טסט: {e}")
                 return
-
             if audit_df is None or audit_df.empty:
                 st.error("לא היו עסקאות בתקופה. נסה להוריד את הסף.")
                 return
-
             features_list = []
             for _, trade in audit_df.iterrows():
                 entry_dt = pd.Timestamp(trade["entry_date"])
@@ -977,16 +1024,13 @@ def screen_ml_trainer():
                             features_list.append(feature_row)
                     except Exception:
                         continue
-
             if len(features_list) < 3:
                 st.error("מעט מדי עסקאות לאימון.")
                 return
-
             new_df = pd.DataFrame(features_list)
             os.makedirs(MODEL_DIR, exist_ok=True)
             safe_slot_name = clean_filename(str(target_slot))
             history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
-
             if os.path.exists(history_path):
                 hist_df = pd.read_csv(history_path)
                 combined_df = (
@@ -995,13 +1039,10 @@ def screen_ml_trainer():
                 )
             else:
                 combined_df = new_df
-
             combined_df.to_csv(history_path, index=False)
-
             if combined_df["label"].nunique() < 2:
                 st.error("צריך לפחות שתי מחלקות שונות לאימון מודל.")
                 return
-
             y = combined_df["label"].values
             le = LabelEncoder()
             phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
@@ -1020,21 +1061,15 @@ def screen_ml_trainer():
                 .replace([np.inf, -np.inf], np.nan)
                 .fillna(0)
             )
-
             model = RandomForestClassifier(
-                n_estimators=100,
-                max_depth=3,
-                min_samples_leaf=3,
-                oob_score=True,
-                random_state=42,
-                n_jobs=-1,
+                n_estimators=100, max_depth=3, min_samples_leaf=3,
+                oob_score=True, random_state=42, n_jobs=-1,
             )
             model.fit(X, y)
             try:
                 train_acc = model.oob_score_
             except Exception:
                 train_acc = model.score(X, y)
-
             optimal_th = calculate_optimal_threshold(model, X, y)
             meta = {
                 "train_ticker": "MANUAL_ADDITION",
@@ -1056,10 +1091,8 @@ def screen_ml_trainer():
             c_r1.metric("דיוק OOB", f"{train_acc*100:.1f}%")
             c_r2.metric("סה\"כ עסקאות בספרייה", len(combined_df))
             c_r3.metric("🎯 Threshold מומלץ", optimal_th)
-
     st.markdown("---")
     render_trainer_control_panel()
-
     st.markdown("---")
     with st.expander("📝 יומן ריצה ושגיאות", expanded=False):
         if os.path.exists(AUTO_TRAINER_LOG_FILE):
@@ -1074,7 +1107,6 @@ def screen_ml_trainer():
                 st.warning(f"לא ניתן לקרוא את קובץ הלוג: {e}")
         else:
             st.info("קובץ היומן עדיין לא נוצר. יופיע כשהאימון יתחיל.")
-
 
 # ============================================================
 # ניתוב
