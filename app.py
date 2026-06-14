@@ -80,6 +80,9 @@ AUTO_TRAINER_PID_FILE = os.path.join(MODEL_DIR, "auto_trainer.pid")
 AUTO_TRAINER_STOP_FILE = os.path.join(MODEL_DIR, "auto_trainer.stop")
 AUTO_TRAINER_LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
 
+# קובץ קונפיגורציה ל-Batch Training
+BATCH_CONFIG_FILE = os.path.join(MODEL_DIR, "batch_config.json")
+
 st.set_page_config(layout="wide", page_title="Institutional Scout Pro")
 
 # ============================================================
@@ -89,7 +92,6 @@ def save_model_to_disk(slot_name, model, metadata, encoder):
     os.makedirs(MODEL_DIR, exist_ok=True)
     safe_name = clean_filename(str(slot_name))
     file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
-    # שמירה אמינה עם protocol=pickle.HIGHEST_PROTOCOL
     with open(file_path, "wb") as f:
         pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f, protocol=pickle.HIGHEST_PROTOCOL)
     return file_path
@@ -105,7 +107,6 @@ def load_all_models_from_disk():
                         data = pickle.load(f)
                     slot = data.get("metadata", {}).get("slot")
                     if not slot:
-                        # חילוץ שם התיקייה במידה והמטא-דאטה חסר
                         slot = filename.replace("model_", "").replace(".pkl", "")
                     loaded[slot] = data
                 except Exception as e:
@@ -275,8 +276,12 @@ def _send_sigkill(pid):
     except Exception:
         pass
 
-def start_trainer_process():
-    """מפעיל את auto_trainer_fixed.py כתהליך נפרד. מחזיר PID."""
+def start_trainer_process(batch_config=None):
+    """
+    מפעיל את auto_trainer_fixed.py כתהליך נפרד.
+    אם batch_config מועבר, כותב קובץ JSON לפני ההפעלה.
+    מחזיר PID.
+    """
     if not TRAINER_AVAILABLE:
         if os.path.isdir(BASE_DIR):
             files_in_root = os.listdir(BASE_DIR)
@@ -296,6 +301,18 @@ def start_trainer_process():
 
     os.makedirs(MODEL_DIR, exist_ok=True)
     clear_stop_request()
+
+    # כתיבת קונפיגורציית Batch אם סופקה
+    if batch_config is not None:
+        with open(BATCH_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(batch_config, f, ensure_ascii=False, indent=2)
+    else:
+        # ריצה מלאה — מחיקת קונפיגורציה קודמת אם קיימת
+        if os.path.exists(BATCH_CONFIG_FILE):
+            try:
+                os.remove(BATCH_CONFIG_FILE)
+            except Exception:
+                pass
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -415,6 +432,54 @@ SECTOR_MAP = {
 }
 
 # ============================================================
+# רשימות Batches לכל סקטור (10-15 מניות לבאץ', 10 batches)
+# ============================================================
+GROWTH_BATCHES = [
+    ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"],
+    ["META", "TSLA", "AVGO", "CRM", "NFLX"],
+    ["AMD", "ADBE", "CSCO", "TXN", "QCOM"],
+    ["INTC", "INTU", "ADI", "PANW", "CRWD"],
+    ["FTNT", "ZS", "DDOG", "SNOW", "MDB"],
+    ["NET", "PLTR", "UBER", "ABNB", "COIN"],
+    ["SOFI", "UPST", "ONTO", "KLAC", "LRCX"],
+    ["AMAT", "MRVL", "SMCI", "DELL", "HPQ"],
+    ["RBLX", "U", "TTWO", "EA", "PANW"],
+    ["CRWD", "ZS", "DDOG", "NET", "PLTR"],
+]
+
+VALUE_BATCHES = [
+    ["BRK-B", "JPM", "JNJ", "V", "UNH"],
+    ["PG", "MA", "HD", "MRK", "ABBV"],
+    ["PEP", "KO", "COST", "WMT", "LLY"],
+    ["TMO", "MCD", "ACN", "BAC", "ABT"],
+    ["DHR", "RTX", "HON", "NKE", "AMGN"],
+    ["PM", "IBM", "SBUX", "GS", "CAT"],
+    ["BA", "GE", "SPGI", "AXP", "BLK"],
+    ["DE", "ISRG", "MDLZ", "GILD", "REGN"],
+    ["SYK", "ZTS", "MMC", "AON", "TJX"],
+    ["SCHW", "CB", "USB", "WFC", "C"],
+]
+
+COMMODITIES_BATCHES = [
+    ["XOM", "CVX", "SLB", "EOG", "OXY"],
+    ["COP", "PSX", "VLO", "FCX", "NEM"],
+    ["GOLD", "AEM", "WPM", "FNV", "PAAS"],
+    ["AG", "GLD", "SLV", "XOM", "CVX"],
+    ["SLB", "EOG", "OXY", "COP", "PSX"],
+    ["VLO", "FCX", "NEM", "GOLD", "AEM"],
+    ["WPM", "FNV", "PAAS", "AG", "GLD"],
+    ["SLV", "XOM", "SLB", "FCX", "WPM"],
+    ["NEM", "GOLD", "AEM", "FNV", "PAAS"],
+    ["AG", "GLD", "SLV", "CVX", "EOG"],
+]
+
+SECTOR_BATCHES = {
+    "Growth (צמיחה)": GROWTH_BATCHES,
+    "Value/Index (ערך/מדד)": VALUE_BATCHES,
+    "Commodities (סחורות)": COMMODITIES_BATCHES,
+}
+
+# ============================================================
 # CSS
 # ============================================================
 st.markdown("""
@@ -484,6 +549,13 @@ h1, h2, h3, h4, h5, h6 {
 .loss {
     background: rgba(239, 83, 80, 0.1);
     border-color: #ef5350;
+}
+.batch-panel {
+    background: #0e1a24;
+    border: 1px solid #2a3f52;
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 12px;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -956,152 +1028,291 @@ def screen_monitor():
         )
         st.dataframe(show_df, use_container_width=True)
 
+# ============================================================
+# ML TRAINER — Batched UI
+# ============================================================
 def screen_ml_trainer():
     st.markdown(
         """
         <div class='header-box ml'>
-            <h2 style='margin:0; color:#e0eaf4;'>🧠 WYCKOFF-ANCHORED ML TRAINER (Manual Override)</h2>
+            <h2 style='margin:0; color:#e0eaf4;'>🧠 WYCKOFF-ANCHORED ML TRAINER — Batched Mode</h2>
             <p style='opacity:0.85;'>
-            מסך זה מאפשר אימון ידני בודד לבדיקות. האימון האוטומטי רץ ברקע עם כפתורי התחלה/עצירה.
+            בחר Batches ספציפיים לאימון ממוקד וחסכוני. כל Batch = 5 מניות.
+            האימון רץ כתהליך רקע — לא מתקע את ה-UI.
             </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
-    st.markdown("### 🔬 אימון ידני בודד")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        train_ticker = st.text_input("סמל לאימון:", "SPY")
-    with c2:
-        target_slot = st.selectbox("משבצת אסטרטגית:", MODEL_SLOTS)
-    with c3:
-        train_risk = st.selectbox("רמת סיכון:", ["Aggressive", "Balanced", "Conservative"])
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        start_date = st.date_input("מתאריך:", value=datetime(2020, 1, 1))
-    with c5:
-        end_date = st.date_input("עד תאריך:", value=datetime.today())
-    with c6:
-        render_threshold_control("סף כניסה בסיסי:", "base_threshold")
-        base_th = st.session_state["base_threshold"]
-    if st.button("🚀 התחל למידה רציפה (הוסף לספרייה)", use_container_width=True, type="primary"):
-        with st.spinner("שואב עסקאות ומאמן מודל..."):
-            df = get_cached_data(
-                train_ticker.upper(),
-                start=start_date.strftime("%Y-%m-%d"),
-                end=end_date.strftime("%Y-%m-%d"),
-            )
-            if df is None or len(df) < 60:
-                st.error("אין מספיק נתונים.")
-                return
-            engine = FactorEngine(BacktestConfig())
-            try:
-                bt_df, audit_df = run_wyckoff_anchored_backtest(
+
+    running = is_trainer_running()
+
+    # ─── חלק עליון: אימון ידני בודד (Manual Override) ─────────────────
+    with st.expander("🔬 אימון ידני בודד (Manual Override)", expanded=False):
+        MODEL_SLOTS = ["Growth (צמיחה)", "Value/Index (ערך/מדד)", "Commodities (סחורות)"]
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            train_ticker = st.text_input("סמל לאימון:", "SPY")
+        with c2:
+            target_slot = st.selectbox("משבצת אסטרטגית:", MODEL_SLOTS)
+        with c3:
+            train_risk = st.selectbox("רמת סיכון:", ["Aggressive", "Balanced", "Conservative"])
+        c4, c5, c6 = st.columns(3)
+        with c4:
+            start_date = st.date_input("מתאריך:", value=datetime(2020, 1, 1))
+        with c5:
+            end_date = st.date_input("עד תאריך:", value=datetime.today())
+        with c6:
+            render_threshold_control("סף כניסה בסיסי:", "base_threshold")
+            base_th = st.session_state["base_threshold"]
+
+        if st.button(
+            "🚀 התחל למידה ידנית (הוסף לספרייה)",
+            use_container_width=True,
+            type="primary",
+            disabled=running,
+        ):
+            with st.spinner("שואב עסקאות ומאמן מודל..."):
+                df = get_cached_data(
                     train_ticker.upper(),
-                    use_ai=False,
-                    threshold=base_th,
-                    period=None,
                     start=start_date.strftime("%Y-%m-%d"),
                     end=end_date.strftime("%Y-%m-%d"),
-                    risk_profile=train_risk,
                 )
-            except Exception as e:
-                st.error(f"שגיאה בבק-טסט: {e}")
-                return
-            if audit_df is None or audit_df.empty:
-                st.error("לא היו עסקאות בתקופה. נסה להוריד את הסף.")
-                return
-            features_list = []
-            for _, trade in audit_df.iterrows():
-                entry_dt = pd.Timestamp(trade["entry_date"])
-                if entry_dt in bt_df.index:
-                    window_df = (
-                        df.loc[:entry_dt].iloc[-200:]
-                        if len(df.loc[:entry_dt]) > 200
-                        else df.loc[:entry_dt]
+                if df is None or len(df) < 60:
+                    st.error("אין מספיק נתונים.")
+                    return
+                engine = FactorEngine(BacktestConfig())
+                try:
+                    bt_df, audit_df = run_wyckoff_anchored_backtest(
+                        train_ticker.upper(),
+                        use_ai=False,
+                        threshold=base_th,
+                        period=None,
+                        start=start_date.strftime("%Y-%m-%d"),
+                        end=end_date.strftime("%Y-%m-%d"),
+                        risk_profile=train_risk,
                     )
-                    try:
-                        factors = engine.compute(window_df)
-                        if len(factors) > 0:
-                            feature_row = factors.iloc[-1].to_dict()
-                            feature_row["phase"] = bt_df.loc[entry_dt]["wyckoff_phase"]
-                            feature_row["label"] = 1 if trade["win"] else 0
-                            feature_row["ticker"] = train_ticker.upper()
-                            feature_row["entry_date"] = trade["entry_date"]
-                            features_list.append(feature_row)
-                    except Exception:
-                        continue
-            if len(features_list) < 3:
-                st.error("מעט מדי עסקאות לאימון.")
-                return
-            new_df = pd.DataFrame(features_list)
-            os.makedirs(MODEL_DIR, exist_ok=True)
-            safe_slot_name = clean_filename(str(target_slot))
-            history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
-            if os.path.exists(history_path):
-                hist_df = pd.read_csv(history_path)
-                combined_df = (
-                    pd.concat([hist_df, new_df], ignore_index=True)
-                    .drop_duplicates(subset=["ticker", "entry_date"], keep="last")
+                except Exception as e:
+                    st.error(f"שגיאה בבק-טסט: {e}")
+                    return
+                if audit_df is None or audit_df.empty:
+                    st.error("לא היו עסקאות בתקופה. נסה להוריד את הסף.")
+                    return
+                features_list = []
+                for _, trade in audit_df.iterrows():
+                    entry_dt = pd.Timestamp(trade["entry_date"])
+                    if entry_dt in bt_df.index:
+                        window_df = (
+                            df.loc[:entry_dt].iloc[-200:]
+                            if len(df.loc[:entry_dt]) > 200
+                            else df.loc[:entry_dt]
+                        )
+                        try:
+                            factors = engine.compute(window_df)
+                            if len(factors) > 0:
+                                feature_row = factors.iloc[-1].to_dict()
+                                feature_row["phase"] = bt_df.loc[entry_dt]["wyckoff_phase"]
+                                feature_row["label"] = 1 if trade["win"] else 0
+                                feature_row["ticker"] = train_ticker.upper()
+                                feature_row["entry_date"] = trade["entry_date"]
+                                features_list.append(feature_row)
+                        except Exception:
+                            continue
+                if len(features_list) < 3:
+                    st.error("מעט מדי עסקאות לאימון.")
+                    return
+                new_df = pd.DataFrame(features_list)
+                os.makedirs(MODEL_DIR, exist_ok=True)
+                safe_slot_name = clean_filename(str(target_slot))
+                history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
+                if os.path.exists(history_path):
+                    hist_df = pd.read_csv(history_path)
+                    combined_df = (
+                        pd.concat([hist_df, new_df], ignore_index=True)
+                        .drop_duplicates(subset=["ticker", "entry_date"], keep="last")
+                    )
+                else:
+                    combined_df = new_df
+                combined_df.to_csv(history_path, index=False)
+                if combined_df["label"].nunique() < 2:
+                    st.error("צריך לפחות שתי מחלקות שונות לאימון מודל.")
+                    return
+                y = combined_df["label"].values
+                le = LabelEncoder()
+                phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
+                phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
+                drop_cols = ["phase", "label", "ticker", "entry_date"]
+                tech_factors = (
+                    combined_df
+                    .drop(columns=[c for c in drop_cols if c in combined_df.columns])
+                    .select_dtypes(include=[np.number])
                 )
-            else:
-                combined_df = new_df
-            combined_df.to_csv(history_path, index=False)
-            if combined_df["label"].nunique() < 2:
-                st.error("צריך לפחות שתי מחלקות שונות לאימון מודל.")
-                return
-            y = combined_df["label"].values
-            le = LabelEncoder()
-            phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
-            phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
-            drop_cols = ["phase", "label", "ticker", "entry_date"]
-            tech_factors = (
-                combined_df
-                .drop(columns=[c for c in drop_cols if c in combined_df.columns])
-                .select_dtypes(include=[np.number])
-            )
-            X = (
-                pd.concat(
-                    [tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)],
-                    axis=1,
+                X = (
+                    pd.concat(
+                        [tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)],
+                        axis=1,
+                    )
+                    .replace([np.inf, -np.inf], np.nan)
+                    .fillna(0)
                 )
-                .replace([np.inf, -np.inf], np.nan)
-                .fillna(0)
-            )
-            model = RandomForestClassifier(
-                n_estimators=100, max_depth=3, min_samples_leaf=3,
-                oob_score=True, random_state=42, n_jobs=-1,
-            )
-            model.fit(X, y)
-            try:
-                train_acc = model.oob_score_
-            except Exception:
-                train_acc = model.score(X, y)
-            optimal_th = calculate_optimal_threshold(model, X, y)
-            meta = {
-                "train_ticker": "MANUAL_ADDITION",
-                "train_acc": train_acc,
-                "test_acc": train_acc,
-                "slot": target_slot,
-                "model_type": "Wyckoff-Anchored",
-                "num_trades": len(combined_df),
-                "recommended_threshold": optimal_th,
-            }
-            save_path = save_model_to_disk(target_slot, model, meta, le)
-            st.session_state.model_archive = load_all_models_from_disk()
-            st.session_state.ml_model = model
-            st.session_state.ml_metadata = meta
-            st.session_state.phase_encoder = le
-            st.session_state.use_ml = True
-            st.success(f"✅ אימון הושלם! מודל נשמר: {save_path}")
-            c_r1, c_r2, c_r3 = st.columns(3)
-            c_r1.metric("דיוק OOB", f"{train_acc*100:.1f}%")
-            c_r2.metric("סה\"כ עסקאות בספרייה", len(combined_df))
-            c_r3.metric("🎯 Threshold מומלץ", optimal_th)
+                model = RandomForestClassifier(
+                    n_estimators=100, max_depth=3, min_samples_leaf=3,
+                    oob_score=True, random_state=42, n_jobs=-1,
+                )
+                model.fit(X, y)
+                try:
+                    train_acc = model.oob_score_
+                except Exception:
+                    train_acc = model.score(X, y)
+                optimal_th = calculate_optimal_threshold(model, X, y)
+                meta = {
+                    "train_ticker": "MANUAL_ADDITION",
+                    "train_acc": train_acc,
+                    "test_acc": train_acc,
+                    "slot": target_slot,
+                    "model_type": "Wyckoff-Anchored",
+                    "num_trades": len(combined_df),
+                    "recommended_threshold": optimal_th,
+                }
+                save_path = save_model_to_disk(target_slot, model, meta, le)
+                st.session_state.model_archive = load_all_models_from_disk()
+                st.session_state.ml_model = model
+                st.session_state.ml_metadata = meta
+                st.session_state.phase_encoder = le
+                st.session_state.use_ml = True
+                st.success(f"✅ אימון הושלם! מודל נשמר: {save_path}")
+                c_r1, c_r2, c_r3 = st.columns(3)
+                c_r1.metric("דיוק OOB", f"{train_acc*100:.1f}%")
+                c_r2.metric("סה\"כ עסקאות בספרייה", len(combined_df))
+                c_r3.metric("🎯 Threshold מומלץ", optimal_th)
+
     st.markdown("---")
+
+    # ─── חלק מרכזי: בחירת Batches ─────────────────────────────────────
+    st.markdown("### 📦 בחר Batches לאימון מבוזר")
+
+    if running:
+        status = read_auto_trainer_status()
+        st.warning(
+            f"⚠️ אימון פעיל כרגע! סטטוס: **{status.get('state','?')}** — "
+            f"{status.get('message','')} ({status.get('progress',0)}%)"
+        )
+
+    # Session state לשמירת בחירות
+    if "batch_selections" not in st.session_state:
+        st.session_state.batch_selections = {
+            "Growth (צמיחה)": [False] * 10,
+            "Value/Index (ערך/מדד)": [False] * 10,
+            "Commodities (סחורות)": [False] * 10,
+        }
+
+    sector_display_names = {
+        "Growth (צמיחה)":       ("🚀", "Growth (צמיחה)", "Growth (צמיחה)"),
+        "Value/Index (ערך/מדד)": ("💎", "Value/Index (ערך/מדד)", "Value/Index (ערך/מדד)"),
+        "Commodities (סחורות)": ("⛏️", "Commodities (סחורות)", "Commodities (סחורות)"),
+    }
+
+    col_growth, col_value, col_commodities = st.columns(3)
+    sector_cols = {
+        "Growth (צמיחה)": col_growth,
+        "Value/Index (ערך/מדד)": col_value,
+        "Commodities (סחורות)": col_commodities,
+    }
+
+    for sector_key, col in sector_cols.items():
+        emoji, display_name, slot_name = sector_display_names[sector_key]
+        batches = SECTOR_BATCHES[sector_key]
+
+        with col:
+            st.markdown(f"<div class='batch-panel'>", unsafe_allow_html=True)
+            st.markdown(f"#### {emoji} {display_name}")
+
+            # כפתורי Select All / Clear All
+            sa_col, ca_col = st.columns(2)
+            with sa_col:
+                if st.button(
+                    "✅ הכל",
+                    key=f"select_all_{sector_key}",
+                    use_container_width=True,
+                    disabled=running,
+                ):
+                    st.session_state.batch_selections[sector_key] = [True] * 10
+                    st.rerun()
+            with ca_col:
+                if st.button(
+                    "❌ נקה",
+                    key=f"clear_all_{sector_key}",
+                    use_container_width=True,
+                    disabled=running,
+                ):
+                    st.session_state.batch_selections[sector_key] = [False] * 10
+                    st.rerun()
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Checkboxes לכל batch
+            for i, batch_tickers in enumerate(batches):
+                label_tickers = ", ".join(batch_tickers)
+                checked = st.checkbox(
+                    f"Batch {i+1}: {label_tickers}",
+                    value=st.session_state.batch_selections[sector_key][i],
+                    key=f"batch_{sector_key}_{i}",
+                    disabled=running,
+                )
+                st.session_state.batch_selections[sector_key][i] = checked
+
+            # ספירת בחירות
+            selected_count = sum(st.session_state.batch_selections[sector_key])
+            total_tickers_selected = sum(
+                len(batches[i])
+                for i in range(10)
+                if st.session_state.batch_selections[sector_key][i]
+            )
+            st.caption(f"נבחרו {selected_count} batches — {total_tickers_selected} מניות")
+
+            # כפתור אימון לסקטור זה
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button(
+                f"🚀 הפעל אימון — {display_name}",
+                key=f"train_sector_{sector_key}",
+                use_container_width=True,
+                type="primary",
+                disabled=running or selected_count == 0 or not TRAINER_AVAILABLE,
+            ):
+                # בנה רשימת מניות מהbatches הנבחרים
+                tickers_to_train = []
+                for i, batch_tickers in enumerate(batches):
+                    if st.session_state.batch_selections[sector_key][i]:
+                        tickers_to_train.extend(batch_tickers)
+                # הסר כפילויות תוך שמירת סדר
+                tickers_to_train = list(dict.fromkeys(tickers_to_train))
+
+                batch_config = {
+                    "slot": slot_name,
+                    "tickers": tickers_to_train,
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "mode": "batched",
+                }
+                try:
+                    pid_started = start_trainer_process(batch_config=batch_config)
+                    st.success(
+                        f"✅ אימון Batched התחיל ברקע!\n"
+                        f"סקטור: {display_name} | {len(tickers_to_train)} מניות | PID: {pid_started}"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"שגיאה בהפעלת הטריינר: {e}")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ─── Auto-Trainer Control Panel ────────────────────────────────────
     render_trainer_control_panel()
+
     st.markdown("---")
+
+    # ─── יומן ריצה ─────────────────────────────────────────────────────
     with st.expander("📝 יומן ריצה ושגיאות", expanded=False):
         if os.path.exists(AUTO_TRAINER_LOG_FILE):
             try:
