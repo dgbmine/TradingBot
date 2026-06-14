@@ -1,4 +1,4 @@
-# auto_trainer_fixed.py – trainer script (NO .items() !)
+# auto_trainer_fixed.py – CLEANED OF STREAMLIT (no import streamlit)
 import os
 import sys
 import json
@@ -26,7 +26,15 @@ def log_message(msg):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
 
-from scout_core import *
+# ⛔️ no streamlit import here
+from scout_core import (
+    clean_filename,
+    calculate_optimal_threshold,
+    FactorEngine,
+    BacktestConfig,
+    run_wyckoff_anchored_backtest,
+    # get_data not needed? It's used inside run_wyckoff_anchored_backtest
+)
 
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
@@ -35,6 +43,7 @@ PID_FILE = os.path.join(MODEL_DIR, "auto_trainer.pid")
 STOP_FILE = os.path.join(MODEL_DIR, "auto_trainer.stop")
 LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
 
+# סקטורים – שימוש ברשימת Tuples, בלי .items()
 GROWTH_TICKERS = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
     "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
@@ -95,12 +104,12 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
             vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)["Close"].rename("VIX_Close")
             macro = pd.concat([spy, vix], axis=1).ffill().bfill()
             macro.index = pd.to_datetime(macro.index).date
-        except:
-            macro = None
+        except Exception as e:
+            log_message(f"[{slot}] מאקרו נכשל: {e}")
 
     for ticker in tickers:
         if os.path.exists(STOP_FILE):
-            log_message("Stop file detected, breaking out of ticker loop.")
+            log_message("בקשת עצירה זוהתה, מפסיק לולאה.")
             break
         time.sleep(0.3)
         try:
@@ -135,18 +144,17 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                         feature_row["entry_date"] = trade["entry_date"]
                         features_list.append(feature_row)
                         added_trades += 1
-        except:
+        except Exception as e:
             errors += 1
             continue
     return features_list, added_trades, errors
 
 def run_auto_trainer():
     log_message("=== auto_trainer_fixed.py STARTED ===")
-    # Write PID
     os.makedirs(MODEL_DIR, exist_ok=True)
-    with open(PID_FILE, "w", encoding="utf-8") as f:
+    with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
-    with open(LOCK_FILE, "w", encoding="utf-8") as f:
+    with open(LOCK_FILE, "w") as f:
         f.write(datetime.now().isoformat())
 
     if os.path.exists(DONE_FLAG):
@@ -165,7 +173,7 @@ def run_auto_trainer():
     try:
         for sector_idx in range(total_sectors):
             if os.path.exists(STOP_FILE):
-                log_message("Stop request detected, exiting.")
+                log_message("עצירה רכה: יוצאים.")
                 break
             slot = SECTORS_LIST[sector_idx][0]
             tickers = SECTORS_LIST[sector_idx][1]
@@ -256,7 +264,6 @@ def run_auto_trainer():
         write_status(state="error", message="האימון נכשל", progress=0, error=str(e))
         raise
     finally:
-        # Cleanup PID/LOCK
         for f in [PID_FILE, LOCK_FILE]:
             if os.path.exists(f):
                 try:
