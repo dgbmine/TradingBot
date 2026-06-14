@@ -372,7 +372,12 @@ class FactorEngine:
             model         = getattr(st.session_state, 'ml_model', None)
             phase_encoder = getattr(st.session_state, 'phase_encoder', None)
 
-        if use_ml and model is not None:
+        # ── תיקון: וודא ש-phase_encoder הוא אובייקט אמיתי ──
+        if phase_encoder is not None and not hasattr(phase_encoder, "classes_"):
+            phase_encoder = None
+
+        # ── תיקון: וודא של-model יש predict_proba ──
+        if use_ml and model is not None and hasattr(model, "predict_proba"):
             X_pred = factors.copy()
             if phase_encoder is not None and df is not None and "wyckoff_phase" in df.columns:
                 phases = df["wyckoff_phase"].fillna("לא בתהליך איסוף")
