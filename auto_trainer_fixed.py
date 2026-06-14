@@ -21,7 +21,7 @@ from sklearn.preprocessing import LabelEncoder
 import streamlit as _st
 class _FakeStSession:
     def __getattr__(self, name):
-        return lambda *args, **kwargs: None
+        return None
 _st.session_state = _FakeStSession()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
