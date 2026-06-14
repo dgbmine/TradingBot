@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.6 (SAFE IMPORT EDITION)
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.8 (REBOOT IN BACKTEST)
 # ============================================================
 import sys
 import os
@@ -388,6 +388,16 @@ def screen_backtest():
                         פאזה: {row['phase_at_entry']} | תשואה: {row['return_pct']}% | יציאה: {row.get('exit_type','N/A')}</div>""",
                         unsafe_allow_html=True,
                     )
+
+    # כפתור הריבוט יושב בתחתית מסך הבק-טסטינג
+    st.markdown("---")
+    st.markdown("### ⚙️ פעולות מערכת")
+    if st.button("🔄 אתחול מלא למערכת (Reboot & Clear Cache)", use_container_width=True):
+        st.cache_data.clear()
+        if hasattr(st, "cache_resource"):
+            st.cache_resource.clear()
+        st.session_state.clear()
+        st.rerun()
 
 
 def screen_scanner():
