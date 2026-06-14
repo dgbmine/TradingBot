@@ -1,4 +1,4 @@
-# auto_trainer_fixed.py – FINAL FIX (MACRO via Ticker, NO ScriptRunContext, Robust Model Save)
+# auto_trainer_fixed.py – FINAL FIX (LOWER THRESHOLD FOR DATA GATHERING)
 import os
 import sys
 import json
@@ -37,7 +37,7 @@ from scout_core import (
     run_wyckoff_anchored_backtest,
 )
 
-import yfinance as yf  # ייבוא מפורש
+import yfinance as yf
 
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
@@ -94,7 +94,6 @@ def write_status(state, message="", progress=0, current_slot="N/A", started_at=N
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 def _safe_download_macro(start_date, end_date):
-    """שימוש ב-Ticker.history כדי להימנע מהתנגשות download."""
     try:
         spy_obj = yf.Ticker("SPY")
         vix_obj = yf.Ticker("^VIX")
@@ -111,7 +110,7 @@ def _safe_download_macro(start_date, end_date):
         log_message(f"מאקרו נכשל: {e}")
         return None
 
-def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_profile="Aggressive"):
+def train_sector(slot, tickers, start_date, end_date, base_threshold=35, risk_profile="Aggressive"):
     features_list = []
     errors = 0
     added_trades = 0
@@ -139,6 +138,8 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                 for col in ["SPY_Close", "VIX_Close"]:
                     if col in df.columns:
                         df[col] = df[col].ffill().bfill().fillna(0)
+            
+            ticker_trades = 0
             for _, trade in audit_df.iterrows():
                 entry_dt = pd.Timestamp(trade["entry_date"])
                 if entry_dt in df.index:
@@ -156,6 +157,11 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                         feature_row["entry_date"] = trade["entry_date"]
                         features_list.append(feature_row)
                         added_trades += 1
+                        ticker_trades += 1
+            
+            if ticker_trades > 0:
+                log_message(f"      - {ticker}: נאספו {ticker_trades} עסקאות היסטוריות למדגם.")
+
         except Exception as e:
             errors += 1
             continue
@@ -179,7 +185,9 @@ def run_auto_trainer():
     start_date_dt = end_date_dt - timedelta(days=6*365)
     start_date = start_date_dt.strftime("%Y-%m-%d")
     end_date = end_date_dt.strftime("%Y-%m-%d")
-    base_threshold = 50
+    
+    # --- התיקון המרכזי: הורדת רף האיסוף ל-35 כדי לאפשר למודל לקבל מספיק דוגמאות למידה ---
+    base_threshold = 35 
     total_sectors = len(SECTORS_LIST)
 
     try:
@@ -190,7 +198,7 @@ def run_auto_trainer():
             slot = SECTORS_LIST[sector_idx][0]
             tickers = SECTORS_LIST[sector_idx][1]
 
-            log_message(f"Processing sector: {slot}")
+            log_message(f"Processing sector: {slot} (Threshold: {base_threshold})")
             write_status(
                 state="running",
                 message=f"מעבד סקטור: {slot}",
@@ -219,13 +227,13 @@ def run_auto_trainer():
                 combined_df = new_df
 
             if combined_df.empty:
-                log_message(f"[{slot}] Skipped model training: No historical trade data extracted.")
+                log_message(f"[{slot}] Skipped model training: No historical trade data extracted even with threshold {base_threshold}.")
                 continue
 
             combined_df.to_csv(history_path, index=False)
 
             if combined_df["label"].nunique() < 2:
-                log_message(f"[{slot}] Skipped model training: Not enough variance in outcomes (needs both win and loss labels).")
+                log_message(f"[{slot}] Skipped model training: Not enough variance in outcomes (needs both win and loss labels). Total trades: {len(combined_df)}")
                 continue
 
             y = combined_df["label"].values
@@ -263,10 +271,9 @@ def run_auto_trainer():
             }
 
             file_path = os.path.join(MODEL_DIR, f"model_{safe_slot_name}.pkl")
-            # שמירה אמינה עם protocol=pickle.HIGHEST_PROTOCOL
             with open(file_path, "wb") as f:
                 pickle.dump({"model": model, "metadata": meta, "phase_encoder": le}, f, protocol=pickle.HIGHEST_PROTOCOL)
-            log_message(f"[{slot}] Done. Model saved successfully. Optimal threshold: {optimal_th}")
+            log_message(f"[{slot}] Done! Model saved successfully. Extracted {len(combined_df)} trades. Optimal threshold: {optimal_th}")
 
         finished_at = datetime.now().isoformat(timespec="seconds")
         write_status(state="completed", message="האימון האוטומטי הסתיים בהצלחה", progress=100, started_at=started_at, finished_at=finished_at)
