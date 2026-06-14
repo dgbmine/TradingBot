@@ -35,7 +35,7 @@ from scout_core import (
 )
 
 # ============================================================
-# טעינה קשיחה של trainer_core.py עם חיפוש במספר נתיבים
+# טעינה קשיחה של trainer_core.py עם חיפוש בכמה נתיבים
 # ============================================================
 def _find_trainer_core_path():
     env_path = os.environ.get("TRAINER_CORE_PATH")
@@ -163,13 +163,9 @@ def load_all_research_dfs_from_disk():
 
 def read_auto_trainer_status():
     default = {
-        "state": "idle",
-        "message": "לא רץ כרגע",
-        "progress": 0,
-        "current_slot": "N/A",
-        "updated_at": "N/A",
-        "started_at": "N/A",
-        "finished_at": "N/A",
+        "state": "idle", "message": "לא רץ כרגע",
+        "progress": 0, "current_slot": "N/A",
+        "updated_at": "N/A", "started_at": "N/A", "finished_at": "N/A",
     }
     if os.path.exists(AUTO_TRAINER_STATUS_FILE):
         try:
@@ -735,29 +731,23 @@ def screen_ml_trainer():
             y = combined_df["label"].values
             le = LabelEncoder()
             phase_encoded = le.fit_transform(combined_df["phase"].fillna("לא בתהליך איסוף"))
-            phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
-            drop_cols = ["phase", "label", "ticker", "entry_date"]
+            phase_dummies = pd.get_dummies(phase_encoded, prefix='phase').astype(int)
+            drop_cols = ['phase', 'label', 'ticker', 'entry_date']
             tech_factors = (
                 combined_df
                 .drop(columns=[c for c in drop_cols if c in combined_df.columns])
                 .select_dtypes(include=[np.number])
             )
             X = (
-                pd.concat(
-                    [tech_factors.reset_index(drop=True), phase_dummies.reset_index(drop=True)],
-                    axis=1,
-                )
+                pd.concat([tech_factors.reset_index(drop=True),
+                           phase_dummies.reset_index(drop=True)], axis=1)
                 .replace([np.inf, -np.inf], np.nan)
                 .fillna(0)
             )
 
             model = RandomForestClassifier(
-                n_estimators=100,
-                max_depth=3,
-                min_samples_leaf=3,
-                oob_score=True,
-                random_state=42,
-                n_jobs=-1,
+                n_estimators=100, max_depth=3, min_samples_leaf=3,
+                oob_score=True, random_state=42, n_jobs=-1,
             )
             model.fit(X, y)
             try:
@@ -767,25 +757,22 @@ def screen_ml_trainer():
 
             optimal_th = calculate_optimal_threshold(model, X, y)
             meta = {
-                "train_ticker": "MANUAL_ADDITION",
-                "train_acc": train_acc,
-                "test_acc": train_acc,
-                "slot": target_slot,
-                "model_type": "Wyckoff-Anchored",
-                "num_trades": len(combined_df),
+                "train_ticker": "MANUAL_ADDITION", "train_acc": train_acc,
+                "test_acc": train_acc, "slot": target_slot,
+                "model_type": "Wyckoff-Anchored", "num_trades": len(combined_df),
                 "recommended_threshold": optimal_th,
             }
             save_path = save_model_to_disk(target_slot, model, meta, le)
-            st.session_state.model_archive = load_all_models_from_disk()
-            st.session_state.ml_model      = model
-            st.session_state.ml_metadata   = meta
-            st.session_state.phase_encoder = le
-            st.session_state.use_ml        = True
+            st.session_state.model_archive  = load_all_models_from_disk()
+            st.session_state.ml_model       = model
+            st.session_state.ml_metadata    = meta
+            st.session_state.phase_encoder  = le
+            st.session_state.use_ml         = True
             st.success(f"✅ אימון הושלם! מודל נשמר: {save_path}")
             c_r1, c_r2, c_r3 = st.columns(3)
-            c_r1.metric("דיוק OOB",           f"{train_acc*100:.1f}%")
+            c_r1.metric("דיוק OOB",              f"{train_acc*100:.1f}%")
             c_r2.metric("סה\"כ עסקאות בספרייה", len(combined_df))
-            c_r3.metric("🎯 Threshold מומלץ", optimal_th)
+            c_r3.metric("🎯 Threshold מומלץ",    optimal_th)
 
     st.markdown("---")
     st.markdown("### 🚦 Auto-Trainer Status")
