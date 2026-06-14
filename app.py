@@ -1,5 +1,5 @@
 # ============================================================
-# INSTITUTIONAL SCOUT PRO - FINAL UI V10.8 (REBOOT IN BACKTEST)
+# INSTITUTIONAL SCOUT PRO - FINAL UI V10.9 (HARD REBOOT)
 # ============================================================
 import sys
 import os
@@ -389,15 +389,19 @@ def screen_backtest():
                         unsafe_allow_html=True,
                     )
 
-    # כפתור הריבוט יושב בתחתית מסך הבק-טסטינג
+    # כפתור הריבוט העוצמתי - מזריק פקודת JavaScript לדפדפן
     st.markdown("---")
-    st.markdown("### ⚙️ פעולות מערכת")
-    if st.button("🔄 אתחול מלא למערכת (Reboot & Clear Cache)", use_container_width=True):
+    st.markdown("### ⚙️ אתחול כפוי למערכת")
+    if st.button("🔄 אתחול מלא (Hard Reboot & Clear Cache)", use_container_width=True):
+        # שלב 1: מנקים את הזיכרון של Streamlit
         st.cache_data.clear()
         if hasattr(st, "cache_resource"):
             st.cache_resource.clear()
         st.session_state.clear()
-        st.rerun()
+        
+        # שלב 2: מזריקים קוד לדפדפן כדי לטעון מחדש את העמוד מאפס לחלוטין
+        js_code = "<script>window.parent.location.reload(true);</script>"
+        st.components.v1.html(js_code, height=0)
 
 
 def screen_scanner():
