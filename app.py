@@ -1,6 +1,6 @@
 # ============================================================
 # INSTITUTIONAL SCOUT PRO - FINAL UI V10.16
-# Safe Subprocess Background Auto-Trainer Control
+# Safe Subprocess Background Auto-Trainer Control & Robust Model Loading
 # ============================================================
 
 import sys
@@ -89,22 +89,27 @@ def save_model_to_disk(slot_name, model, metadata, encoder):
     os.makedirs(MODEL_DIR, exist_ok=True)
     safe_name = clean_filename(str(slot_name))
     file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
+    # שמירה אמינה עם protocol=pickle.HIGHEST_PROTOCOL
     with open(file_path, "wb") as f:
-        pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f)
+        pickle.dump({"model": model, "metadata": metadata, "phase_encoder": encoder}, f, protocol=pickle.HIGHEST_PROTOCOL)
     return file_path
 
 def load_all_models_from_disk():
     loaded = {}
     if os.path.exists(MODEL_DIR):
         for filename in os.listdir(MODEL_DIR):
-            if filename.endswith(".pkl"):
+            if filename.startswith("model_") and filename.endswith(".pkl"):
                 filepath = os.path.join(MODEL_DIR, filename)
                 try:
                     with open(filepath, "rb") as f:
                         data = pickle.load(f)
-                    slot = data.get("metadata", {}).get("slot", filename)
+                    slot = data.get("metadata", {}).get("slot")
+                    if not slot:
+                        # חילוץ שם התיקייה במידה והמטא-דאטה חסר
+                        slot = filename.replace("model_", "").replace(".pkl", "")
                     loaded[slot] = data
-                except Exception:
+                except Exception as e:
+                    print(f"Error loading model {filename}: {e}")
                     pass
     return loaded
 
