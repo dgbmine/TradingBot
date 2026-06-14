@@ -24,6 +24,7 @@ LOG_FILE = os.path.join(BASE_DIR, "auto_trainer_error.log")
 
 
 def log_message(msg):
+    os.makedirs(BASE_DIR, exist_ok=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
 
@@ -37,9 +38,9 @@ from scout_core import (
     clean_filename,
 )
 
-MODEL_DIR   = os.path.join(BASE_DIR, "models")
+MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
-DONE_FLAG   = os.path.join(MODEL_DIR, "auto_trainer.done")
+DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
 
 # ---------- סקטורים — list of tuples, מוגדר כאן מקומית ----------
 GROWTH_TICKERS = [
@@ -69,9 +70,9 @@ COMMODITIES_TICKERS = [
 
 # list of tuples — לא dict, לא set, לא TRAINING_UNIVERSE
 SECTORS_LIST = [
-    ("Growth (צמיחה)",        GROWTH_TICKERS),
+    ("Growth (צמיחה)", GROWTH_TICKERS),
     ("Value/Index (ערך/מדד)", VALUE_TICKERS),
-    ("Commodities (סחורות)",  COMMODITIES_TICKERS),
+    ("Commodities (סחורות)", COMMODITIES_TICKERS),
 ]
 
 
@@ -80,9 +81,9 @@ SECTORS_LIST = [
 # ============================================================
 def save_model_to_disk(slot_name, model, metadata, encoder):
     os.makedirs(MODEL_DIR, exist_ok=True)
-    safe_name  = clean_filename(str(slot_name))
-    file_path  = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
-    save_data  = {"model": model, "metadata": metadata, "phase_encoder": encoder}
+    safe_name = clean_filename(str(slot_name))
+    file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
+    save_data = {"model": model, "metadata": metadata, "phase_encoder": encoder}
     with open(file_path, "wb") as f:
         pickle.dump(save_data, f)
     return file_path
@@ -92,13 +93,13 @@ def write_status(state, message="", progress=0, current_slot="N/A",
                  started_at=None, finished_at=None, error=None):
     os.makedirs(MODEL_DIR, exist_ok=True)
     payload = {
-        "state":        state,
-        "message":      message,
-        "progress":     int(progress),
+        "state": state,
+        "message": message,
+        "progress": int(progress),
         "current_slot": str(current_slot),
-        "updated_at":   datetime.now().isoformat(timespec="seconds"),
-        "started_at":   started_at or datetime.now().isoformat(timespec="seconds"),
-        "finished_at":  finished_at or "N/A",
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "started_at": started_at or datetime.now().isoformat(timespec="seconds"),
+        "finished_at": finished_at or "N/A",
     }
     if error:
         payload["error"] = str(error)
@@ -109,18 +110,16 @@ def write_status(state, message="", progress=0, current_slot="N/A",
 def train_sector(slot, tickers, start_date, end_date,
                  base_threshold=50, risk_profile="Aggressive"):
     features_list = []
-    errors        = 0
-    added_trades  = 0
-    engine        = FactorEngine(BacktestConfig())
+    errors = 0
+    added_trades = 0
+    engine = FactorEngine(BacktestConfig())
 
     # הורדת מאקרו (SPY + VIX) אחת לכל סקטור
     macro = None
     if yf is not None:
         try:
-            spy   = yf.download("SPY", start=start_date, end=end_date,
-                                 progress=False)["Close"].rename("SPY_Close")
-            vix   = yf.download("^VIX", start=start_date, end=end_date,
-                                 progress=False)["Close"].rename("VIX_Close")
+            spy = yf.download("SPY", start=start_date, end=end_date, progress=False)["Close"].rename("SPY_Close")
+            vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)["Close"].rename("VIX_Close")
             macro = pd.concat([spy, vix], axis=1).ffill().bfill()
             macro.index = pd.to_datetime(macro.index).date
         except Exception:
@@ -158,16 +157,16 @@ def train_sector(slot, tickers, start_date, end_date,
                     factors = engine.compute(window_df)
                     if len(factors) == 0:
                         continue
-                    factors     = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
+                    factors = factors.replace([np.inf, -np.inf], np.nan).fillna(0)
                     feature_row = factors.iloc[-1].to_dict()
 
                     raw_phase = df.loc[entry_dt]["wyckoff_phase"]
                     if isinstance(raw_phase, pd.Series):
                         raw_phase = raw_phase.iloc[-1]
 
-                    feature_row["phase"]      = raw_phase
-                    feature_row["label"]      = 1 if trade["win"] else 0
-                    feature_row["ticker"]     = ticker
+                    feature_row["phase"] = raw_phase
+                    feature_row["label"] = 1 if trade["win"] else 0
+                    feature_row["ticker"] = ticker
                     feature_row["entry_date"] = trade["entry_date"]
                     features_list.append(feature_row)
                     added_trades += 1
@@ -183,14 +182,14 @@ def train_sector(slot, tickers, start_date, end_date,
 
 def _build_X_y(combined_df):
     """בניית X, y, le מוכנים לאימון."""
-    y  = combined_df["label"].values
+    y = combined_df["label"].values
     le = LabelEncoder()
     phase_encoded = le.fit_transform(
         combined_df["phase"].fillna("לא בתהליך איסוף")
     )
     phase_dummies = pd.get_dummies(phase_encoded, prefix="phase").astype(int)
-    drop_cols     = ["phase", "label", "ticker", "entry_date"]
-    tech_factors  = (
+    drop_cols = ["phase", "label", "ticker", "entry_date"]
+    tech_factors = (
         combined_df
         .drop(columns=[c for c in drop_cols if c in combined_df.columns])
         .select_dtypes(include=[np.number])
@@ -221,12 +220,12 @@ def run_auto_trainer():
     write_status(state="running", message="האימון האוטומטי התחיל",
                  progress=0, started_at=started_at)
 
-    end_date_dt   = datetime.today()
+    end_date_dt = datetime.today()
     start_date_dt = end_date_dt - timedelta(days=6 * 365)
-    start_date    = start_date_dt.strftime("%Y-%m-%d")
-    end_date      = end_date_dt.strftime("%Y-%m-%d")
+    start_date = start_date_dt.strftime("%Y-%m-%d")
+    end_date = end_date_dt.strftime("%Y-%m-%d")
     base_threshold = 50
-    total_sectors  = len(SECTORS_LIST)
+    total_sectors = len(SECTORS_LIST)
 
     try:
         for sector_idx, (slot, tickers) in enumerate(SECTORS_LIST, start=1):
@@ -248,7 +247,7 @@ def run_auto_trainer():
             )
 
             safe_slot_name = clean_filename(slot_str)
-            history_path   = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
+            history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
             log_message(f"history_path: {history_path}")
 
             new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
@@ -294,12 +293,12 @@ def run_auto_trainer():
 
             optimal_th = calculate_optimal_threshold(model, X, y)
             meta = {
-                "train_ticker":          "AUTO_TRAINER_MASTER_LIBRARY",
-                "train_acc":             train_acc,
-                "test_acc":              train_acc,
-                "slot":                  slot_str,
-                "model_type":            "Wyckoff-Anchored",
-                "num_trades":            len(combined_df),
+                "train_ticker": "AUTO_TRAINER_MASTER_LIBRARY",
+                "train_acc": train_acc,
+                "test_acc": train_acc,
+                "slot": slot_str,
+                "model_type": "Wyckoff-Anchored",
+                "num_trades": len(combined_df),
                 "recommended_threshold": optimal_th,
             }
 
