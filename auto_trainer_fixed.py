@@ -1,4 +1,4 @@
-# auto_trainer_fixed.py – CLEANED OF STREAMLIT (no import streamlit)
+# auto_trainer_fixed.py – FIXED MACRO & SILENCED STREAMLIT WARNINGS
 import os
 import sys
 import json
@@ -12,10 +12,15 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+# ── השתקה מוחלטת של Streamlit (לפני ייבוא scout_core) ──
+# כדי ש-scout_core לא ינסה לגשת ל-st.session_state ויתריע.
+import streamlit as _st
+# דריסת הפונקציות שגורמות לאזהרה – הופכת אותן ללא-כלום.
+class _FakeStreamlit:
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None
+_st.session_state = _FakeStreamlit()
+# ──────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
@@ -26,14 +31,13 @@ def log_message(msg):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
 
-# ⛔️ no streamlit import here
+# ⛔️ no direct streamlit import – already faked above
 from scout_core import (
     clean_filename,
     calculate_optimal_threshold,
     FactorEngine,
     BacktestConfig,
     run_wyckoff_anchored_backtest,
-    # get_data not needed? It's used inside run_wyckoff_anchored_backtest
 )
 
 MODEL_DIR = os.path.join(BASE_DIR, "models")
@@ -43,7 +47,7 @@ PID_FILE = os.path.join(MODEL_DIR, "auto_trainer.pid")
 STOP_FILE = os.path.join(MODEL_DIR, "auto_trainer.stop")
 LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
 
-# סקטורים – שימוש ברשימת Tuples, בלי .items()
+# סקטורים – רשימת Tuples, ללא .items()
 GROWTH_TICKERS = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
     "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
@@ -91,21 +95,39 @@ def write_status(state, message="", progress=0, current_slot="N/A", started_at=N
     with open(STATUS_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
+def _safe_download_macro(start_date, end_date):
+    """
+    מוריד SPY ו‑VIX בצורה חסינה. מחזיר DataFrame או None.
+    """
+    import yfinance as yf  # ייבוא מקומי מובטח
+    try:
+        # הורדת SPY
+        spy = yf.download("SPY", start=start_date, end=end_date, progress=False)
+        if isinstance(spy, pd.DataFrame) and "Close" in spy.columns:
+            spy = spy["Close"].rename("SPY_Close")
+        else:
+            raise ValueError("SPY data is not a DataFrame with Close column")
+        
+        vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)
+        if isinstance(vix, pd.DataFrame) and "Close" in vix.columns:
+            vix = vix["Close"].rename("VIX_Close")
+        else:
+            raise ValueError("VIX data is not a DataFrame with Close column")
+        
+        macro = pd.concat([spy, vix], axis=1).ffill().bfill()
+        macro.index = pd.to_datetime(macro.index).date
+        return macro
+    except Exception as e:
+        log_message(f"מאקרו נכשל: {e}")
+        return None
+
 def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_profile="Aggressive"):
     features_list = []
     errors = 0
     added_trades = 0
     engine = FactorEngine(BacktestConfig())
 
-    macro = None
-    if yf is not None:
-        try:
-            spy = yf.download("SPY", start=start_date, end=end_date, progress=False)["Close"].rename("SPY_Close")
-            vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)["Close"].rename("VIX_Close")
-            macro = pd.concat([spy, vix], axis=1).ffill().bfill()
-            macro.index = pd.to_datetime(macro.index).date
-        except Exception as e:
-            log_message(f"[{slot}] מאקרו נכשל: {e}")
+    macro = _safe_download_macro(start_date, end_date)
 
     for ticker in tickers:
         if os.path.exists(STOP_FILE):
