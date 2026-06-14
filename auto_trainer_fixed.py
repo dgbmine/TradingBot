@@ -1,4 +1,4 @@
-# auto_trainer_fixed.py – FINAL FIX (MACRO via Ticker, NO ScriptRunContext)
+# auto_trainer_fixed.py – FINAL FIX (MACRO via Ticker, NO ScriptRunContext, Robust Model Save)
 import os
 import sys
 import json
@@ -219,11 +219,13 @@ def run_auto_trainer():
                 combined_df = new_df
 
             if combined_df.empty:
+                log_message(f"[{slot}] Skipped model training: No historical trade data extracted.")
                 continue
 
             combined_df.to_csv(history_path, index=False)
 
             if combined_df["label"].nunique() < 2:
+                log_message(f"[{slot}] Skipped model training: Not enough variance in outcomes (needs both win and loss labels).")
                 continue
 
             y = combined_df["label"].values
@@ -261,9 +263,10 @@ def run_auto_trainer():
             }
 
             file_path = os.path.join(MODEL_DIR, f"model_{safe_slot_name}.pkl")
+            # שמירה אמינה עם protocol=pickle.HIGHEST_PROTOCOL
             with open(file_path, "wb") as f:
-                pickle.dump({"model": model, "metadata": meta, "phase_encoder": le}, f)
-            log_message(f"[{slot}] Done. Optimal threshold: {optimal_th}")
+                pickle.dump({"model": model, "metadata": meta, "phase_encoder": le}, f, protocol=pickle.HIGHEST_PROTOCOL)
+            log_message(f"[{slot}] Done. Model saved successfully. Optimal threshold: {optimal_th}")
 
         finished_at = datetime.now().isoformat(timespec="seconds")
         write_status(state="completed", message="האימון האוטומטי הסתיים בהצלחה", progress=100, started_at=started_at, finished_at=finished_at)
