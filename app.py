@@ -45,19 +45,37 @@ from scout_core import (
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 
 def _hunt_for_trainer():
-    """מחזיר את הנתיב המוחלט לקובץ trainer_core.py - מחפש קודם בתיקיית האפליקציה."""
-    # המיקום הצפוי: באותה תיקייה של app.py
+    """
+    מחפש את trainer_core.py בצורה אגרסיבית:
+    1. באותה תיקייה של app.py
+    2. בתיקיית העבודה הנוכחית
+    3. בתיקיית ההורה
+    4. חיפוש רקורסיבי בתיקיית BASE_DIR (עד עומק 3)
+    """
+    # מיקום צפוי: באותה תיקייה של app.py
     primary = os.path.join(BASE_DIR, "trainer_core.py")
     if os.path.isfile(primary):
         return primary
-    # נסה תיקיית העבודה
+
+    # תיקיית העבודה
     cwd_candidate = os.path.join(os.getcwd(), "trainer_core.py")
     if os.path.isfile(cwd_candidate):
         return cwd_candidate
-    # נסה תיקיית הורה
+
+    # תיקיית הורה
     parent_candidate = os.path.join(os.path.dirname(BASE_DIR), "trainer_core.py")
     if os.path.isfile(parent_candidate):
         return parent_candidate
+
+    # חיפוש רקורסיבי בתוך BASE_DIR (עד עומק 3)
+    for root, dirs, files in os.walk(BASE_DIR):
+        # הגבלת עומק
+        depth = root[len(BASE_DIR):].count(os.sep)
+        if depth > 3:
+            continue
+        if "trainer_core.py" in files:
+            return os.path.join(root, "trainer_core.py")
+
     # fallback - מחזיר את הנתיב הראשי, גם אם הקובץ לא קיים (לצורך הודעת שגיאה)
     return primary
 
@@ -271,10 +289,19 @@ def _send_sigkill(pid):
 def start_trainer_process():
     """מפעיל את trainer_core.py כתהליך נפרד. מחזיר PID."""
     if not TRAINER_AVAILABLE:
-        raise FileNotFoundError(
-            f"קובץ trainer_core.py לא נמצא בנתיב: {TRAINER_SCRIPT}\n"
-            f"אנא וודא שהקובץ נמצא באותה תיקייה של app.py ({BASE_DIR})."
-        )
+        # אבחון מפורט
+        if os.path.isdir(BASE_DIR):
+            files_in_root = os.listdir(BASE_DIR)
+            msg = (
+                f"קובץ trainer_core.py לא נמצא!\n"
+                f"נתיב צפוי: {TRAINER_SCRIPT}\n"
+                f"תיקיית האפליקציה (BASE_DIR): {BASE_DIR}\n"
+                f"קבצים בתיקייה: {files_in_root}\n"
+                f"אנא וודא שהקובץ קיים וקריא."
+            )
+        else:
+            msg = f"BASE_DIR אינה תיקייה: {BASE_DIR}"
+        raise FileNotFoundError(msg)
 
     if is_trainer_running():
         raise RuntimeError("האימון כבר רץ כרגע.")
@@ -289,13 +316,12 @@ def start_trainer_process():
     log_handle = open(AUTO_TRAINER_LOG_FILE, "a", encoding="utf-8")
     try:
         kwargs = {
-            "cwd": BASE_DIR,                       # תקיית העבודה תהיה תיקיית האפליקציה
+            "cwd": os.path.dirname(TRAINER_SCRIPT),  # תקיית העבודה תהיה תיקיית הקובץ
             "stdout": log_handle,
             "stderr": subprocess.STDOUT,
             "env": env,
         }
         if os.name == "nt":
-            # CREATE_NEW_PROCESS_GROUP מאפשר שליחת Ctrl+Break וכו'
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             kwargs["start_new_session"] = True
@@ -304,23 +330,19 @@ def start_trainer_process():
         write_trainer_pid(proc.pid)
         return proc.pid
     finally:
-        # סגירת ה-file handle של האב אינה פוגעת בתהליך הבן
         try:
             log_handle.close()
         except Exception:
             pass
 
 def stop_trainer_process(grace_seconds=5):
-    """עוצר את תהליך האימון: קודם SIGTERM, ואז SIGKILL אם לא נסגר."""
     pid = read_trainer_pid()
     write_stop_request()
 
     if pid is None:
-        # אולי התהליך כבר מת, ננקה שאריות
         cleanup_stale_trainer_artifacts()
         return True
 
-    # שליחת SIGTERM (או taskkill רך ב-Windows)
     _send_sigterm(pid)
     deadline = time.time() + float(grace_seconds)
     while time.time() < deadline:
@@ -332,7 +354,6 @@ def stop_trainer_process(grace_seconds=5):
         _send_sigkill(pid)
         time.sleep(0.5)
 
-    # נקה קבצים
     try:
         if os.path.exists(AUTO_TRAINER_PID_FILE):
             os.remove(AUTO_TRAINER_PID_FILE)
