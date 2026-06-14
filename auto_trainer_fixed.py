@@ -1,4 +1,4 @@
-# auto_trainer_fixed.py – FIXED MACRO & SILENCED STREAMLIT WARNINGS
+# auto_trainer_fixed.py – FINAL FIX (MACRO via Ticker, NO ScriptRunContext)
 import os
 import sys
 import json
@@ -12,15 +12,12 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 
-# ── השתקה מוחלטת של Streamlit (לפני ייבוא scout_core) ──
-# כדי ש-scout_core לא ינסה לגשת ל-st.session_state ויתריע.
+# ── השתקת Streamlit (מונע ScriptRunContext) ──
 import streamlit as _st
-# דריסת הפונקציות שגורמות לאזהרה – הופכת אותן ללא-כלום.
-class _FakeStreamlit:
+class _FakeStSession:
     def __getattr__(self, name):
         return lambda *args, **kwargs: None
-_st.session_state = _FakeStreamlit()
-# ──────────────────────────────────────────────────────────
+_st.session_state = _FakeStSession()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
@@ -31,7 +28,7 @@ def log_message(msg):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
 
-# ⛔️ no direct streamlit import – already faked above
+# ⛔️ no streamlit import (already faked)
 from scout_core import (
     clean_filename,
     calculate_optimal_threshold,
@@ -40,6 +37,8 @@ from scout_core import (
     run_wyckoff_anchored_backtest,
 )
 
+import yfinance as yf  # ייבוא מפורש
+
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
 DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
@@ -47,7 +46,6 @@ PID_FILE = os.path.join(MODEL_DIR, "auto_trainer.pid")
 STOP_FILE = os.path.join(MODEL_DIR, "auto_trainer.stop")
 LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
 
-# סקטורים – רשימת Tuples, ללא .items()
 GROWTH_TICKERS = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
     "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
@@ -96,25 +94,17 @@ def write_status(state, message="", progress=0, current_slot="N/A", started_at=N
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 def _safe_download_macro(start_date, end_date):
-    """
-    מוריד SPY ו‑VIX בצורה חסינה. מחזיר DataFrame או None.
-    """
-    import yfinance as yf  # ייבוא מקומי מובטח
+    """שימוש ב-Ticker.history כדי להימנע מהתנגשות download."""
     try:
-        # הורדת SPY
-        spy = yf.download("SPY", start=start_date, end=end_date, progress=False)
-        if isinstance(spy, pd.DataFrame) and "Close" in spy.columns:
-            spy = spy["Close"].rename("SPY_Close")
-        else:
-            raise ValueError("SPY data is not a DataFrame with Close column")
-        
-        vix = yf.download("^VIX", start=start_date, end=end_date, progress=False)
-        if isinstance(vix, pd.DataFrame) and "Close" in vix.columns:
-            vix = vix["Close"].rename("VIX_Close")
-        else:
-            raise ValueError("VIX data is not a DataFrame with Close column")
-        
-        macro = pd.concat([spy, vix], axis=1).ffill().bfill()
+        spy_obj = yf.Ticker("SPY")
+        vix_obj = yf.Ticker("^VIX")
+        spy = spy_obj.history(start=start_date, end=end_date)
+        vix = vix_obj.history(start=start_date, end=end_date)
+        if "Close" not in spy.columns or "Close" not in vix.columns:
+            raise ValueError("Missing Close column")
+        spy_close = spy["Close"].rename("SPY_Close")
+        vix_close = vix["Close"].rename("VIX_Close")
+        macro = pd.concat([spy_close, vix_close], axis=1).ffill().bfill()
         macro.index = pd.to_datetime(macro.index).date
         return macro
     except Exception as e:
@@ -131,7 +121,7 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
 
     for ticker in tickers:
         if os.path.exists(STOP_FILE):
-            log_message("בקשת עצירה זוהתה, מפסיק לולאה.")
+            log_message("Stop request detected, breaking.")
             break
         time.sleep(0.3)
         try:
