@@ -1,6 +1,12 @@
-# auto_trainer_fixed.py — FINAL CLEAN VERSION
-import os, sys, json, time, pickle, traceback
+# auto_trainer_fixed.py – trainer script (NO .items() !)
+import os
+import sys
+import json
+import time
+import pickle
+import traceback
 from datetime import datetime, timedelta
+
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -20,20 +26,15 @@ def log_message(msg):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
 
-log_message("=== auto_trainer_fixed.py LOADED ===")
-
-# ---------- פונקציית ניקוי מקומית ----------
-def clean_filename(name):
-    name = str(name)
-    return "".join(c for c in name if c.isalnum() or c in (' ', '_', '-')).replace(' ', '_')
-
 from scout_core import *
 
 MODEL_DIR = os.path.join(BASE_DIR, "models")
 STATUS_FILE = os.path.join(MODEL_DIR, "auto_trainer_status.json")
 DONE_FLAG = os.path.join(MODEL_DIR, "auto_trainer.done")
+PID_FILE = os.path.join(MODEL_DIR, "auto_trainer.pid")
+STOP_FILE = os.path.join(MODEL_DIR, "auto_trainer.stop")
+LOCK_FILE = os.path.join(MODEL_DIR, "auto_trainer.lock")
 
-# ---------- סקטורים ----------
 GROWTH_TICKERS = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AVGO","CRM",
     "NFLX","AMD","ADBE","CSCO","TXN","QCOM","INTC","INTU","ADI",
@@ -64,16 +65,6 @@ SECTORS_LIST = [
     ("Value/Index (ערך/מדד)", VALUE_TICKERS),
     ("Commodities (סחורות)", COMMODITIES_TICKERS)
 ]
-
-# ---------- פונקציות ----------
-def save_model_to_disk(slot_name, model, metadata, encoder):
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    safe_name = clean_filename(slot_name)
-    file_path = os.path.join(MODEL_DIR, f"model_{safe_name}.pkl")
-    save_data = {"model": model, "metadata": metadata, "phase_encoder": encoder}
-    with open(file_path, "wb") as f:
-        pickle.dump(save_data, f)
-    return file_path
 
 def write_status(state, message="", progress=0, current_slot="N/A", started_at=None, finished_at=None, error=None):
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -108,6 +99,9 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
             macro = None
 
     for ticker in tickers:
+        if os.path.exists(STOP_FILE):
+            log_message("Stop file detected, breaking out of ticker loop.")
+            break
         time.sleep(0.3)
         try:
             bt_df, audit_df = run_wyckoff_anchored_backtest(
@@ -116,7 +110,6 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
             )
             if audit_df is None or audit_df.empty:
                 continue
-
             df = bt_df.copy()
             if macro is not None and not df.empty:
                 df["date_key"] = df.index.date
@@ -125,7 +118,6 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
                 for col in ["SPY_Close", "VIX_Close"]:
                     if col in df.columns:
                         df[col] = df[col].ffill().bfill().fillna(0)
-
             for _, trade in audit_df.iterrows():
                 entry_dt = pd.Timestamp(trade["entry_date"])
                 if entry_dt in df.index:
@@ -146,14 +138,17 @@ def train_sector(slot, tickers, start_date, end_date, base_threshold=50, risk_pr
         except:
             errors += 1
             continue
-
     return features_list, added_trades, errors
 
 def run_auto_trainer():
-    log_message("=== run_auto_trainer STARTED (fixed) ===")
-    log_message(f"SECTORS_LIST type = {type(SECTORS_LIST)}, len = {len(SECTORS_LIST)}")
-
+    log_message("=== auto_trainer_fixed.py STARTED ===")
+    # Write PID
     os.makedirs(MODEL_DIR, exist_ok=True)
+    with open(PID_FILE, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
+    with open(LOCK_FILE, "w", encoding="utf-8") as f:
+        f.write(datetime.now().isoformat())
+
     if os.path.exists(DONE_FLAG):
         os.remove(DONE_FLAG)
 
@@ -169,11 +164,13 @@ def run_auto_trainer():
 
     try:
         for sector_idx in range(total_sectors):
+            if os.path.exists(STOP_FILE):
+                log_message("Stop request detected, exiting.")
+                break
             slot = SECTORS_LIST[sector_idx][0]
             tickers = SECTORS_LIST[sector_idx][1]
 
-            log_message(f"Processing slot: {slot} (type {type(slot)})")
-
+            log_message(f"Processing sector: {slot}")
             write_status(
                 state="running",
                 message=f"מעבד סקטור: {slot}",
@@ -187,8 +184,7 @@ def run_auto_trainer():
                 end_date=end_date, base_threshold=base_threshold
             )
 
-            slot_str = str(slot)
-            safe_slot_name = clean_filename(slot_str)
+            safe_slot_name = clean_filename(str(slot))
             history_path = os.path.join(MODEL_DIR, f"training_data_{safe_slot_name}.csv")
 
             new_df = pd.DataFrame(features_list) if features_list else pd.DataFrame()
@@ -244,7 +240,9 @@ def run_auto_trainer():
                 "recommended_threshold": optimal_th
             }
 
-            save_model_to_disk(slot, model, meta, le)
+            file_path = os.path.join(MODEL_DIR, f"model_{safe_slot_name}.pkl")
+            with open(file_path, "wb") as f:
+                pickle.dump({"model": model, "metadata": meta, "phase_encoder": le}, f)
             log_message(f"[{slot}] Done. Optimal threshold: {optimal_th}")
 
         finished_at = datetime.now().isoformat(timespec="seconds")
@@ -257,6 +255,14 @@ def run_auto_trainer():
         log_message(f"Critical error: {error_msg}")
         write_status(state="error", message="האימון נכשל", progress=0, error=str(e))
         raise
+    finally:
+        # Cleanup PID/LOCK
+        for f in [PID_FILE, LOCK_FILE]:
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except:
+                    pass
 
 if __name__ == "__main__":
     run_auto_trainer()
